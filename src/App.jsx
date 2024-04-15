@@ -9,15 +9,26 @@ import {
   List,
   ListItem,
   ListIcon,
-  Divider
+  Divider,
+  Alert,
+  AlertIcon,
+  AlertTitle,
+  AlertDescription,
+  Accordion,
+  AccordionItem,
+  AccordionButton,
+  AccordionPanel,
+  AccordionIcon
 } from '@chakra-ui/react';
 import { CheckCircleIcon } from '@chakra-ui/icons';
 
 function App() {
   const [fixtures, setFixtures] = useState([]);
   const [results, setResults] = useState([]);
+  const [highlights, setHighlights] = useState([]);
   const [loading, setLoading] = useState(false);
   const [tournamentOver, setTournamentOver] = useState(false);
+  const [winner, setWinner] = useState(null);
 
   const fetchFixtures = async () => {
     setLoading(true);
@@ -25,7 +36,9 @@ function App() {
     const data = await response.json();
     setFixtures(data.fixtures[0] || []);
     setResults([]);
+    setHighlights([]);
     setTournamentOver(false);
+    setWinner(null);
     setLoading(false);
   };
 
@@ -34,8 +47,10 @@ function App() {
     const response = await fetch('http://localhost:9001/api/jcup/play');
     const data = await response.json();
     setResults(data.results.roundResults || []);
-    if (!data.results.nextRoundFixtures.length || (data.results.nextRoundFixtures.length === 1 && data.results.nextRoundFixtures[0].team2 === null)) {
-      setTournamentOver(true);  // No more matches to play, tournament is over
+    setHighlights(data.results.highlights || []);
+    if (data.results.nextRoundFixtures === "Tournament finished, initializing new tournament.") {
+      setWinner(data.results.winner);
+      setTournamentOver(true);
       setFixtures([]);
     } else {
       setFixtures(data.results.nextRoundFixtures);
@@ -51,9 +66,52 @@ function App() {
     <Container centerContent p={4}>
       <VStack spacing={4}>
         <Heading size="xl" mb={6}>JCup Tournament</Heading>
-        {loading ? <Text>Loading...</Text> : (
-          <>
-            <VStack align="stretch" spacing={5}>
+        {loading && <Text>Loading...</Text>}
+
+        <VStack align="stretch" spacing={5}>
+          {tournamentOver && winner ? (
+            <>
+              <Alert status="success" variant="subtle">
+                <AlertIcon />
+                <Box flex="1">
+                  <AlertTitle>Champion: {winner.name}</AlertTitle>
+                  <AlertDescription display="block">
+                    Congratulations to {winner.name} for winning the tournament!
+                  </AlertDescription>
+                </Box>
+              </Alert>
+
+              <Box>
+                <Text fontSize="2xl" mb={2}>Final Score:</Text>
+                <Text>{results.length ? results[results.length - 1] : 'No final score available'}</Text>
+              </Box>
+
+              {highlights.length > 0 && (
+                <Accordion allowToggle>
+                  <AccordionItem>
+                    <h2>
+                      <AccordionButton>
+                        <Box flex="1" textAlign="left">
+                          View Match Highlights
+                        </Box>
+                        <AccordionIcon />
+                      </AccordionButton>
+                    </h2>
+                    <AccordionPanel pb={4}>
+                      {highlights[0].map((highlight, index) => (
+                        <Text key={index}>{highlight}</Text>
+                      ))}
+                    </AccordionPanel>
+                  </AccordionItem>
+                </Accordion>
+              )}
+
+              <Button colorScheme="green" size="lg" onClick={fetchFixtures}>
+                Restart Tournament
+              </Button>
+            </>
+          ) : (
+            <>
               <Box>
                 <Text fontSize="2xl" mb={2}>Fixtures:</Text>
                 <List spacing={3}>
@@ -79,19 +137,12 @@ function App() {
                   )) : <Text>No results to display.</Text>}
                 </List>
               </Box>
-            </VStack>
-
-            {tournamentOver ? (
-              <Button colorScheme="green" size="lg" onClick={fetchFixtures}>
-                Restart Tournament
-              </Button>
-            ) : (
               <Button colorScheme="teal" size="lg" onClick={simulateRound} isDisabled={loading}>
                 {results.length ? 'Next Round' : 'Start Round'}
               </Button>
-            )}
-          </>
-        )}
+            </>
+          )}
+        </VStack>
       </VStack>
     </Container>
   );
