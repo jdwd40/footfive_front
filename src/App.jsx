@@ -18,7 +18,8 @@ import {
   AccordionItem,
   AccordionButton,
   AccordionPanel,
-  AccordionIcon
+  AccordionIcon,
+  useToast
 } from '@chakra-ui/react';
 import { CheckCircleIcon } from '@chakra-ui/icons';
 
@@ -29,33 +30,75 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [tournamentOver, setTournamentOver] = useState(false);
   const [winner, setWinner] = useState(null);
+  const [error, setError] = useState(null);
+  const toast = useToast();
+
+  const showError = (message) => {
+    setError(message);
+    toast({
+      title: "Error",
+      description: message,
+      status: "error",
+      duration: 5000,
+      isClosable: true,
+    });
+  };
 
   const fetchFixtures = async () => {
     setLoading(true);
-    const response = await fetch('http://localhost:9001/api/jcup/init');
-    const data = await response.json();
-    setFixtures(data.fixtures[0] || []);
-    setResults([]);
-    setHighlights([]);
-    setTournamentOver(false);
-    setWinner(null);
-    setLoading(false);
+    setError(null);
+    try {
+      const response = await fetch('/api/jcup/init');
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log('Init response:', data); // Debug log
+      
+      setFixtures(data.fixtures?.[0] || []);
+      setResults([]);
+      setHighlights([]);
+      setTournamentOver(false);
+      setWinner(null);
+    } catch (error) {
+      console.error('Error fetching fixtures:', error);
+      showError(`Failed to fetch fixtures: ${error.message}. Make sure your backend is running on port 9001.`);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const simulateRound = async () => {
     setLoading(true);
-    const response = await fetch('http://localhost:9001/api/jcup/play');
-    const data = await response.json();
-    setResults(data.results.roundResults || []);
-    setHighlights(data.results.highlights || []);
-    if (data.results.nextRoundFixtures === "Tournament finished, initializing new tournament.") {
-      setWinner(data.results.winner);
-      setTournamentOver(true);
-      setFixtures([]);
-    } else {
-      setFixtures(data.results.nextRoundFixtures);
+    setError(null);
+    try {
+      const response = await fetch('/api/jcup/play');
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log('Play response:', data); // Debug log
+      
+      setResults(data.results?.roundResults || []);
+      setHighlights(data.results?.highlights || []);
+      
+      if (data.results?.nextRoundFixtures === "Tournament finished, initializing new tournament.") {
+        setWinner(data.results?.winner);
+        setTournamentOver(true);
+        setFixtures([]);
+      } else {
+        setFixtures(data.results?.nextRoundFixtures || []);
+      }
+    } catch (error) {
+      console.error('Error simulating round:', error);
+      showError(`Failed to simulate round: ${error.message}`);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   useEffect(() => {
@@ -66,6 +109,19 @@ function App() {
     <Container centerContent p={4}>
       <VStack spacing={4}>
         <Heading size="xl" mb={6}>JCup Tournament</Heading>
+        
+        {error && (
+          <Alert status="error" variant="subtle">
+            <AlertIcon />
+            <Box flex="1">
+              <AlertTitle>Connection Error</AlertTitle>
+              <AlertDescription display="block">
+                {error}
+              </AlertDescription>
+            </Box>
+          </Alert>
+        )}
+
         {loading && <Text>Loading...</Text>}
 
         <VStack align="stretch" spacing={5}>
@@ -98,7 +154,7 @@ function App() {
                       </AccordionButton>
                     </h2>
                     <AccordionPanel pb={4}>
-                      {highlights[0].map((highlight, index) => (
+                      {highlights[0]?.map((highlight, index) => (
                         <Text key={index}>{highlight}</Text>
                       ))}
                     </AccordionPanel>
@@ -118,7 +174,7 @@ function App() {
                   {fixtures.length > 0 ? fixtures.map((fixture, index) => (
                     <ListItem key={index}>
                       <ListIcon as={CheckCircleIcon} color="green.500" />
-                      {fixture.team2 ? `${fixture.team1.name} vs ${fixture.team2.name}` : `${fixture.team1.name} has a bye`}
+                      {fixture.team2 ? `${fixture.team1?.name || 'Unknown'} vs ${fixture.team2?.name || 'Unknown'}` : `${fixture.team1?.name || 'Unknown'} has a bye`}
                     </ListItem>
                   )) : <Text>No fixtures to display.</Text>}
                 </List>
@@ -137,7 +193,13 @@ function App() {
                   )) : <Text>No results to display.</Text>}
                 </List>
               </Box>
-              <Button colorScheme="teal" size="lg" onClick={simulateRound} isDisabled={loading}>
+              
+              <Button 
+                colorScheme="teal" 
+                size="lg" 
+                onClick={simulateRound} 
+                isDisabled={loading || !!error}
+              >
                 {results.length ? 'Next Round' : 'Start Round'}
               </Button>
             </>
