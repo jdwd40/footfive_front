@@ -1,6 +1,7 @@
-import { useEffect, useCallback, useState } from 'react'
+import { useEffect, useCallback, useState, useRef } from 'react'
 import useLiveStore from '../stores/useLiveStore'
 import useLiveEvents from '../hooks/useLiveEvents'
+import { liveApi } from '../api/client'
 import RoundSection from '../components/live/RoundSection'
 import TeamStatsPanel from '../components/live/TeamStatsPanel'
 import WinnerCelebration from '../components/live/WinnerCelebration'
@@ -26,7 +27,7 @@ function normalizeRound(name) {
 }
 
 const TOURNAMENT_STATE_CONFIG = {
-  IDLE: { title: 'Waiting for Tournament', subtitle: 'Next tournament starts at :55', icon: '⏰', phase: 'idle' },
+  IDLE: { title: 'Waiting for Tournament', subtitle: 'Next tournament starts 5 minutes after the previous one', icon: '⏰', phase: 'idle' },
   SETUP: { title: 'Tournament Starting', subtitle: 'Teams are being shuffled...', icon: '🎲', phase: 'setup' },
   ROUND_OF_16: { title: 'Round of 16', subtitle: '16 teams battle for 8 spots', icon: '🏟️', phase: 'Round of 16' },
   QF_BREAK: { title: 'Quarter-Finals Starting', subtitle: 'Brief intermission...', icon: '☕', phase: 'break' },
@@ -36,7 +37,7 @@ const TOURNAMENT_STATE_CONFIG = {
   FINAL_BREAK: { title: 'The Final Awaits', subtitle: 'Who will lift the trophy?', icon: '🏆', phase: 'break' },
   FINAL: { title: 'THE FINAL', subtitle: 'The ultimate showdown', icon: '🏆', phase: 'Final' },
   RESULTS: { title: 'Tournament Complete', subtitle: 'Champion crowned!', icon: '👑', phase: 'complete' },
-  COMPLETE: { title: 'Tournament Complete', subtitle: 'See you next hour!', icon: '🎉', phase: 'complete' },
+  COMPLETE: { title: 'Tournament Complete', subtitle: 'Next tournament in 5 minutes', icon: '🎉', phase: 'complete' },
 }
 
 // Map state to current round
@@ -50,12 +51,21 @@ const STATE_TO_ROUND = {
   FINAL: 'Final',
 }
 
+// Auto-cycle: Duration for each phase (2.5 minutes)
+const AUTO_CYCLE_DURATION = 150000
+
 export default function LiveDashboard() {
   const { addToast } = useToast()
   const [selectedTeam, setSelectedTeam] = useState(null)
   const [showTeamPanel, setShowTeamPanel] = useState(false)
   const [showCelebration, setShowCelebration] = useState(false)
   const [celebrationShown, setCelebrationShown] = useState(false)
+
+  // Auto-cycle state for automatic tournament restart
+  const [autoCyclePhase, setAutoCyclePhase] = useState(null) // null | 'WINNER_DISPLAY' | 'STARTING_TOURNAMENT' | 'FIXTURES_PREVIEW'
+  const [autoCycleCountdown, setAutoCycleCountdown] = useState(0)
+  const autoCyclePhaseStartRef = useRef(null)
+  const autoCycledTournamentIdRef = useRef(null)
 
   const {
     tournament,
@@ -76,40 +86,21 @@ export default function LiveDashboard() {
 
   // Handle incoming SSE events
   const onEvent = useCallback((event) => {
+    console.log('[LiveDashboard] SSE Event received:', event.type, event)
     handleEvent(event)
 
-    // Show toast for goals
-    if (event.type === 'goal') {
-      const teamName = event.homeTeam?.id === event.teamId ? event.homeTeam?.name : event.awayTeam?.name
-      addToast(
-        `⚽ GOAL! ${event.displayName || ''} - ${teamName || 'Goal!'}`,
-        'goal',
-        5000
-      )
-    } else if (event.type === 'match_start') {
-      addToast(
-        `🏁 Kick Off: ${event.homeTeam?.name} vs ${event.awayTeam?.name}`,
-        'info',
-        3000
-      )
-    } else if (event.type === 'match_end') {
-      addToast(
-        `🏁 FT: ${event.homeTeam?.name} ${event.score?.home} - ${event.score?.away} ${event.awayTeam?.name}`,
-        'info',
-        5000
-      )
-    } else if (event.type === 'round_complete') {
-      addToast(`✅ ${event.round || 'Round'} complete!`, 'success', 5000)
-    } else if (event.type === 'tournament_end') {
-      addToast(
-        `👑 ${event.winner?.name || 'Winner'} wins the tournament!`,
-        'goal',
-        10000
-      )
-      // Show celebration
+    // Show celebration for tournament winner
+    if (event.type === 'tournament_end') {
       setShowCelebration(true)
     }
-  }, [handleEvent, addToast])
+  }, [handleEvent])
+
+  // Debug: Log recentEvents changes
+  useEffect(() => {
+    if (recentEvents.length > 0) {
+      console.log('[LiveDashboard] recentEvents updated:', recentEvents.length, 'events', recentEvents.slice(-3))
+    }
+  }, [recentEvents])
 
   // Connect to SSE stream
   const {
@@ -139,10 +130,60 @@ export default function LiveDashboard() {
     return () => clearInterval(pollInterval)
   }, [fetchSnapshot])
 
+  // Poll for recent events as fallback for SSE (since SSE might not deliver all events)
+  const lastEventSeqRef = useRef(0)
+  useEffect(() => {
+    const isLiveRound = ['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(tournament?.state)
+    if (!isLiveRound) return
+
+    const pollRecentEvents = async () => {
+      try {
+        const data = await liveApi.getRecentEvents({ limit: 20 })
+        const events = data.events || []
+
+        // Process new events that we haven't seen yet
+        events.forEach(event => {
+          const seq = event.seq || 0
+          if (seq > lastEventSeqRef.current) {
+            console.log('[LiveDashboard] Polled event:', event.type, event)
+            onEvent(event)
+            lastEventSeqRef.current = seq
+          }
+        })
+      } catch (err) {
+        console.error('Failed to poll events:', err)
+      }
+    }
+
+    // Poll every 2 seconds for events during live rounds
+    const eventPollInterval = setInterval(pollRecentEvents, 2000)
+    pollRecentEvents() // Initial poll
+
+    return () => clearInterval(eventPollInterval)
+  }, [tournament?.state, onEvent])
+
   // Update store connection state from SSE
   useEffect(() => {
     useLiveStore.setState({ connected: sseConnected, connecting: sseConnecting })
   }, [sseConnected, sseConnecting])
+
+  // Force refresh when entering a new live round - ensures all matches display simultaneously
+  const prevTournamentStateRef = useRef(tournament?.state)
+  useEffect(() => {
+    const prevState = prevTournamentStateRef.current
+    const currentState = tournament?.state
+    prevTournamentStateRef.current = currentState
+
+    // Only trigger refresh when entering a new live round (not on initial load)
+    const isNowLive = ['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(currentState)
+    const wasBreak = ['SETUP', 'QF_BREAK', 'SF_BREAK', 'FINAL_BREAK'].includes(prevState)
+
+    // Trigger immediate refresh when transitioning from break/previous round to a new live round
+    if (isNowLive && (wasBreak || (prevState && prevState !== currentState))) {
+      console.log('[LiveDashboard] Entering new round:', currentState, '- forcing refresh')
+      fetchSnapshot()
+    }
+  }, [tournament?.state, fetchSnapshot])
 
   // Show celebration when there's a winner (and we haven't shown it yet)
   useEffect(() => {
@@ -155,6 +196,99 @@ export default function LiveDashboard() {
       setCelebrationShown(false)
     }
   }, [tournament?.winner, tournament?.state, celebrationShown])
+
+  // ─── Auto-cycle: Detect tournament completion and start winner display ───
+  useEffect(() => {
+    const state = tournament?.state
+    const tId = tournament?.tournamentId
+    if (
+      (state === 'RESULTS' || state === 'COMPLETE') &&
+      tId &&
+      autoCycledTournamentIdRef.current !== tId &&
+      !autoCyclePhase
+    ) {
+      console.log('[AutoCycle] Tournament completed, starting winner display')
+      autoCycledTournamentIdRef.current = tId
+      setAutoCyclePhase('WINNER_DISPLAY')
+      autoCyclePhaseStartRef.current = Date.now()
+      setAutoCycleCountdown(AUTO_CYCLE_DURATION)
+    }
+  }, [tournament?.state, tournament?.tournamentId, autoCyclePhase])
+
+  // ─── Auto-cycle: Countdown timer and phase transitions ───
+  useEffect(() => {
+    if (!autoCyclePhase || autoCyclePhase === 'STARTING_TOURNAMENT') return
+    if (!autoCyclePhaseStartRef.current) return
+
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - autoCyclePhaseStartRef.current
+      const remaining = Math.max(0, AUTO_CYCLE_DURATION - elapsed)
+      setAutoCycleCountdown(remaining)
+
+      if (remaining <= 0) {
+        clearInterval(interval)
+
+        if (autoCyclePhase === 'WINNER_DISPLAY') {
+          console.log('[AutoCycle] Winner display complete, starting new tournament')
+          setAutoCyclePhase('STARTING_TOURNAMENT')
+          liveApi.startTournament()
+            .then(() => {
+              console.log('[AutoCycle] Tournament started, fetching fixtures')
+              return fetchSnapshot()
+            })
+            .then(() => {
+              setAutoCyclePhase('FIXTURES_PREVIEW')
+              autoCyclePhaseStartRef.current = Date.now()
+              setAutoCycleCountdown(AUTO_CYCLE_DURATION)
+            })
+            .catch(err => {
+              console.error('[AutoCycle] Failed to start tournament:', err)
+              setAutoCyclePhase(null)
+            })
+        } else if (autoCyclePhase === 'FIXTURES_PREVIEW') {
+          console.log('[AutoCycle] Fixtures preview complete, transitioning to live')
+          setAutoCyclePhase(null)
+        }
+      }
+    }, 1000)
+
+    return () => clearInterval(interval)
+  }, [autoCyclePhase, fetchSnapshot])
+
+  // ─── Auto-cycle: Poll for fixtures during preview if none available yet ───
+  useEffect(() => {
+    if (autoCyclePhase !== 'FIXTURES_PREVIEW') return
+
+    const r16Fixtures = fixtures.filter(f => {
+      const round = normalizeRound(f.round)
+      return round === 'Round of 16'
+    })
+
+    if (r16Fixtures.length > 0) return
+
+    console.log('[AutoCycle] No R16 fixtures yet, polling...')
+    const poll = setInterval(() => {
+      fetchSnapshot()
+    }, 3000)
+
+    return () => clearInterval(poll)
+  }, [autoCyclePhase, fixtures, fetchSnapshot])
+
+  // ─── Auto-cycle: Reset when new tournament starts playing ───
+  useEffect(() => {
+    if (!autoCyclePhase) return
+    const state = tournament?.state
+    // If backend started a new tournament while we're showing winner
+    if (autoCyclePhase === 'WINNER_DISPLAY' && state === 'SETUP') {
+      const tId = tournament?.tournamentId
+      if (tId && tId !== autoCycledTournamentIdRef.current) {
+        console.log('[AutoCycle] Backend started new tournament, switching to fixtures preview')
+        setAutoCyclePhase('FIXTURES_PREVIEW')
+        autoCyclePhaseStartRef.current = Date.now()
+        setAutoCycleCountdown(AUTO_CYCLE_DURATION)
+      }
+    }
+  }, [tournament?.state, tournament?.tournamentId, autoCyclePhase])
 
   // Get state config
   const liveTournament = tournament?.state && tournament.state !== 'IDLE'
@@ -183,13 +317,22 @@ export default function LiveDashboard() {
     const roundMatches = matchesByRound[round]
     const allFinished = roundMatches.length > 0 && roundMatches.every(m => m.isFinished || m.state === 'FINISHED')
     const anyInProgress = roundMatches.some(m =>
-      ['FIRST_HALF', 'SECOND_HALF', 'EXTRA_TIME_1', 'EXTRA_TIME_2', 'PENALTIES', 'HALFTIME'].includes(m.state)
+      ['FIRST_HALF', 'SECOND_HALF', 'EXTRA_TIME_1', 'EXTRA_TIME_2', 'PENALTIES', 'HALFTIME', 'ET_HALFTIME'].includes(m.state)
     )
+
+    // A round is "current" if:
+    // 1. Tournament state says this is the current round (currentRound === round), OR
+    // 2. Any match in this round is actively playing (anyInProgress), OR
+    // 3. Tournament state says this round should be playing AND matches exist but aren't finished
+    const tournamentSaysCurrentRound = currentRound === round
+    const hasUnfinishedMatches = roundMatches.length > 0 && !allFinished
+    const isCurrent = tournamentSaysCurrentRound || anyInProgress || (tournamentSaysCurrentRound && hasUnfinishedMatches)
 
     return {
       isCompleted: allFinished,
-      isCurrent: currentRound === round || anyInProgress,
-      isPending: !allFinished && !anyInProgress && roundMatches.length === 0
+      isCurrent,
+      // Only pending if no matches exist AND it's not the current round per tournament state
+      isPending: !allFinished && !anyInProgress && roundMatches.length === 0 && !tournamentSaysCurrentRound
     }
   }
 
@@ -262,112 +405,129 @@ export default function LiveDashboard() {
         />
       )}
 
-      {/* Tournament Header */}
-      <TournamentHeader
-        tournament={tournament}
-        stateConfig={stateConfig}
-        currentRound={currentRound}
-      />
-
-      {/* Goal Ticker - Shows scores and announces goals during live rounds */}
-      <GoalTicker
-        goalEvents={recentEvents}
-        matches={currentRound ? matchesByRound[currentRound] || [] : []}
-        isLive={['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(tournament?.state)}
-        isBreak={['QF_BREAK', 'SF_BREAK', 'FINAL_BREAK', 'SETUP'].includes(tournament?.state)}
-        currentRound={currentRound || ''}
-        nextRound={stateConfig?.phase === 'break' ? stateConfig?.title?.replace(' Starting', '') : ''}
-      />
-
-      {/* Current Round Highlight (when live) */}
-      {currentRound && matchesByRound[currentRound]?.length > 0 && (
-        <div className="mb-8 animate-slide-up">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-3 h-3 rounded-full bg-live animate-pulse" />
-            <h2 className="text-xl font-bold text-text">Now Playing</h2>
-          </div>
-          <RoundSection
-            round={currentRound}
-            matches={matchesByRound[currentRound]}
-            isCurrentRound={true}
-            onTeamClick={handleTeamClick}
+      {/* Main Content - Auto-cycle phases or normal tournament view */}
+      {autoCyclePhase === 'WINNER_DISPLAY' || autoCyclePhase === 'STARTING_TOURNAMENT' ? (
+        <AutoCycleWinnerDisplay
+          winner={tournament?.winner}
+          runnerUp={tournament?.runnerUp}
+          countdown={autoCycleCountdown}
+          isStarting={autoCyclePhase === 'STARTING_TOURNAMENT'}
+          matchesByRound={matchesByRound}
+          getRoundState={getRoundState}
+          onTeamClick={handleTeamClick}
+        />
+      ) : autoCyclePhase === 'FIXTURES_PREVIEW' ? (
+        <AutoCycleFixturesPreview
+          matches={matchesByRound['Round of 16'] || []}
+          countdown={autoCycleCountdown}
+          onTeamClick={handleTeamClick}
+        />
+      ) : (
+        <>
+          {/* Tournament Header */}
+          <TournamentHeader
+            tournament={tournament}
+            stateConfig={stateConfig}
+            currentRound={currentRound}
           />
-        </div>
-      )}
 
-      {/* Tournament Progress / All Rounds */}
-      <div className="space-y-4">
-        <h2 className="text-lg font-bold text-text-muted uppercase tracking-wider">
-          Tournament Progress
-        </h2>
+          {/* Goal Ticker - Shows scores and announces goals during live rounds */}
+          <GoalTicker
+            goalEvents={recentEvents}
+            matches={currentRound ? matchesByRound[currentRound] || [] : []}
+            isLive={['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(tournament?.state)}
+            isBreak={['QF_BREAK', 'SF_BREAK', 'FINAL_BREAK', 'SETUP'].includes(tournament?.state)}
+            currentRound={currentRound || ''}
+            nextRound={stateConfig?.phase === 'break' ? stateConfig?.title?.replace(' Starting', '') : ''}
+          />
 
-        <div className="space-y-4">
-          {ROUNDS.map((round, idx) => {
-            const { isCompleted, isCurrent, isPending } = getRoundState(round)
-            // Skip showing current round again if already shown above
-            if (isCurrent && currentRound === round && matchesByRound[round]?.length > 0) {
-              return null
-            }
-
-            return (
-              <div
-                key={round}
-                className="animate-slide-up"
-                style={{ animationDelay: `${idx * 100}ms` }}
-              >
-                <RoundSection
-                  round={round}
-                  matches={matchesByRound[round]}
-                  isCompleted={isCompleted}
-                  isCurrentRound={isCurrent}
-                  isPending={isPending}
-                  onTeamClick={handleTeamClick}
-                />
+          {/* Current Round Highlight (when live) */}
+          {currentRound && matchesByRound[currentRound]?.length > 0 && (
+            <div className="mb-8 animate-slide-up">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-3 h-3 rounded-full bg-live animate-pulse" />
+                <h2 className="text-xl font-bold text-text">Now Playing</h2>
               </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Tournament Winner Section (persisted after celebration closes) */}
-      {tournament?.winner && (tournament?.state === 'RESULTS' || tournament?.state === 'COMPLETE') && (
-        <div className="mt-8 animate-slide-up">
-          <div className="bg-gradient-to-br from-gold/10 via-card to-gold/10 rounded-3xl border border-gold/30 p-8 text-center glow-gold">
-            <div className="w-24 h-24 mx-auto mb-4 rounded-full bg-gradient-to-br from-yellow-400 via-gold to-yellow-500 flex items-center justify-center text-5xl shadow-xl shadow-gold/30">
-              🏆
+              <RoundSection
+                round={currentRound}
+                matches={matchesByRound[currentRound]}
+                isCurrentRound={true}
+                onTeamClick={handleTeamClick}
+              />
             </div>
-            <p className="text-gold text-sm font-semibold uppercase tracking-wider mb-2">Tournament Champion</p>
-            <h3 className="text-3xl font-bold text-text mb-2">
-              {tournament.winner?.name || tournament.winner}
-            </h3>
-            {tournament.runnerUp && (
-              <p className="text-text-muted">
-                Runner-up: <span className="text-text">{tournament.runnerUp?.name || tournament.runnerUp}</span>
-              </p>
-            )}
-            <button
-              onClick={() => handleTeamClick(tournament.winner)}
-              className="mt-4 btn btn-ghost text-gold hover:bg-gold/10"
-            >
-              View Champion Stats →
-            </button>
-          </div>
-        </div>
-      )}
+          )}
 
-      {/* Waiting State (No tournament) */}
-      {(!tournament || tournament?.state === 'IDLE') && (
-        <div className="mt-8 text-center py-12 bg-card rounded-2xl border border-border">
-          <span className="text-6xl block mb-4">⏳</span>
-          <h3 className="text-xl font-bold text-text mb-2">Waiting for Next Tournament</h3>
-          <p className="text-text-muted mb-4">
-            Tournaments run every hour starting at :55
-          </p>
-          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-card-hover text-text-muted">
-            <span>Next tournament starts at</span>
-            <span className="font-mono font-bold text-primary">:55</span>
+          {/* Tournament Progress / All Rounds */}
+          <div className="space-y-4">
+            <h2 className="text-lg font-bold text-text-muted uppercase tracking-wider">
+              Tournament Progress
+            </h2>
+
+            <div className="space-y-4">
+              {ROUNDS.map((round, idx) => {
+                const { isCompleted, isCurrent, isPending } = getRoundState(round)
+                // Skip showing current round again if already shown above
+                if (isCurrent && currentRound === round && matchesByRound[round]?.length > 0) {
+                  return null
+                }
+
+                return (
+                  <div
+                    key={round}
+                    className="animate-slide-up"
+                    style={{ animationDelay: `${idx * 100}ms` }}
+                  >
+                    <RoundSection
+                      round={round}
+                      matches={matchesByRound[round]}
+                      isCompleted={isCompleted}
+                      isCurrentRound={isCurrent}
+                      isPending={isPending}
+                      onTeamClick={handleTeamClick}
+                    />
+                  </div>
+                )
+              })}
+            </div>
           </div>
-        </div>
+
+          {/* Tournament Winner Section (persisted after celebration closes) */}
+          {tournament?.winner && (tournament?.state === 'RESULTS' || tournament?.state === 'COMPLETE') && !autoCyclePhase && (
+            <div className="mt-8 animate-slide-up">
+              <div className="bg-gradient-to-br from-gold/10 via-card to-gold/10 rounded-3xl border border-gold/30 p-8 text-center glow-gold">
+                <div className="w-24 h-24 mx-auto mb-4 rounded-full bg-gradient-to-br from-yellow-400 via-gold to-yellow-500 flex items-center justify-center text-5xl shadow-xl shadow-gold/30">
+                  🏆
+                </div>
+                <p className="text-gold text-sm font-semibold uppercase tracking-wider mb-2">Tournament Champion</p>
+                <h3 className="text-3xl font-bold text-text mb-2">
+                  {tournament.winner?.name || tournament.winner}
+                </h3>
+                {tournament.runnerUp && (
+                  <p className="text-text-muted">
+                    Runner-up: <span className="text-text">{tournament.runnerUp?.name || tournament.runnerUp}</span>
+                  </p>
+                )}
+                <button
+                  onClick={() => handleTeamClick(tournament.winner)}
+                  className="mt-4 btn btn-ghost text-gold hover:bg-gold/10"
+                >
+                  View Champion Stats →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Waiting State (No tournament) */}
+          {(!tournament || tournament?.state === 'IDLE') && (
+            <div className="mt-8 text-center py-12 bg-card rounded-2xl border border-border">
+              <span className="text-6xl block mb-4">⏳</span>
+              <h3 className="text-xl font-bold text-text mb-2">Waiting for Next Tournament</h3>
+              <p className="text-text-muted mb-4">
+                Each round starts 5 minutes after the last. The next tournament begins 5 minutes after the previous one finishes.
+              </p>
+            </div>
+          )}
+        </>
       )}
     </div>
   )
@@ -493,6 +653,178 @@ function TournamentHeader({ tournament, stateConfig, currentRound }) {
             #{tournament.tournamentId}
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Auto-Cycle Components ───
+
+function CountdownTimer({ countdown, label }) {
+  const minutes = Math.floor(countdown / 60000)
+  const seconds = Math.floor((countdown % 60000) / 1000)
+
+  return (
+    <div className="text-center">
+      <p className="text-text-muted text-sm mb-2">{label}</p>
+      <div className="font-mono text-4xl font-bold text-primary">
+        {minutes}:{seconds.toString().padStart(2, '0')}
+      </div>
+      {/* Progress bar */}
+      <div className="mt-3 w-48 mx-auto h-1.5 rounded-full bg-border overflow-hidden">
+        <div
+          className="h-full rounded-full bg-primary transition-all duration-1000 ease-linear"
+          style={{ width: `${(countdown / AUTO_CYCLE_DURATION) * 100}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function AutoCycleWinnerDisplay({ winner, runnerUp, countdown, isStarting, matchesByRound, getRoundState, onTeamClick }) {
+  return (
+    <div className="animate-slide-up">
+      {/* Winner Showcase */}
+      <div className="flex flex-col items-center justify-center min-h-[50vh] py-12">
+        {/* Trophy */}
+        <div className="relative mb-8">
+          <div className="w-36 h-36 rounded-full bg-gradient-to-br from-yellow-400 via-gold to-yellow-500 flex items-center justify-center text-8xl shadow-2xl shadow-gold/30 animate-bounce-in">
+            🏆
+          </div>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-44 h-44 rounded-full trophy-shine" />
+          </div>
+        </div>
+
+        {/* Champion Title */}
+        <h1 className="text-4xl sm:text-6xl font-bold mb-4">
+          <span className="text-gradient-gold">CHAMPION!</span>
+        </h1>
+
+        {/* Winner Name */}
+        <div className="bg-gradient-to-r from-gold/10 via-gold/20 to-gold/10 rounded-3xl px-12 py-8 mb-4 border border-gold/20 text-center glow-gold">
+          <h2 className="text-3xl sm:text-5xl font-bold text-text">
+            {winner?.name || winner || 'Unknown'}
+          </h2>
+        </div>
+
+        {/* Runner Up */}
+        {runnerUp && (
+          <p className="text-text-muted text-xl mb-8">
+            Runner-up: <span className="text-text font-semibold">{runnerUp?.name || runnerUp}</span>
+          </p>
+        )}
+
+        {/* Countdown */}
+        <div className="mt-4">
+          {isStarting ? (
+            <div className="flex items-center gap-3 text-primary text-lg">
+              <LoadingSpinner size="sm" />
+              <span>Starting new tournament...</span>
+            </div>
+          ) : (
+            <CountdownTimer
+              countdown={countdown}
+              label="New tournament starting in"
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Completed Tournament Rounds (below winner, dimmed) */}
+      <div className="mt-8 space-y-4 opacity-40">
+        <h2 className="text-lg font-bold text-text-muted uppercase tracking-wider">
+          Tournament Results
+        </h2>
+        <div className="space-y-4">
+          {ROUNDS.map((round, idx) => {
+            const roundMatches = matchesByRound[round] || []
+            if (roundMatches.length === 0) return null
+            const { isCompleted } = getRoundState(round)
+            return (
+              <div key={round} className="animate-slide-up" style={{ animationDelay: `${idx * 100}ms` }}>
+                <RoundSection
+                  round={round}
+                  matches={roundMatches}
+                  isCompleted={isCompleted}
+                  onTeamClick={onTeamClick}
+                />
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AutoCycleFixturesPreview({ matches, countdown, onTeamClick }) {
+  return (
+    <div className="animate-slide-up">
+      {/* Header */}
+      <div className="text-center mb-10 pt-8">
+        <div className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-primary/20 border border-primary/30 text-primary text-sm font-bold mb-6">
+          <span className="w-2.5 h-2.5 rounded-full bg-primary animate-pulse" />
+          NEW TOURNAMENT
+        </div>
+        <h1 className="text-4xl sm:text-5xl font-bold text-text mb-3">Round of 16</h1>
+        <p className="text-text-muted text-lg">8 matches coming up</p>
+      </div>
+
+      {/* Fixtures Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-10 max-w-4xl mx-auto">
+        {matches.length > 0 ? (
+          matches.map((match, idx) => (
+            <FixturePreviewCard
+              key={match.fixtureId || idx}
+              match={match}
+              index={idx}
+              onTeamClick={onTeamClick}
+            />
+          ))
+        ) : (
+          <div className="col-span-2 text-center py-12 text-text-muted">
+            <LoadingSpinner size="md" className="mb-4" />
+            <p>Loading fixtures...</p>
+          </div>
+        )}
+      </div>
+
+      {/* Countdown */}
+      <div className="text-center pb-8">
+        <CountdownTimer
+          countdown={countdown}
+          label="Matches starting in"
+        />
+      </div>
+    </div>
+  )
+}
+
+function FixturePreviewCard({ match, index, onTeamClick }) {
+  const { homeTeam, awayTeam } = match
+
+  return (
+    <div
+      className="bg-card rounded-2xl border border-border p-5 animate-slide-up hover:border-primary/30 transition-all duration-200"
+      style={{ animationDelay: `${index * 80}ms` }}
+    >
+      <div className="flex items-center justify-between gap-4">
+        <button
+          onClick={() => onTeamClick?.(homeTeam)}
+          className="flex-1 text-right font-semibold text-text hover:text-primary transition-colors truncate"
+        >
+          {homeTeam?.name || 'TBD'}
+        </button>
+        <div className="flex-shrink-0 w-12 h-12 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
+          <span className="text-primary font-bold text-sm">VS</span>
+        </div>
+        <button
+          onClick={() => onTeamClick?.(awayTeam)}
+          className="flex-1 text-left font-semibold text-text hover:text-primary transition-colors truncate"
+        >
+          {awayTeam?.name || 'TBD'}
+        </button>
       </div>
     </div>
   )

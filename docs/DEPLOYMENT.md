@@ -22,7 +22,7 @@ sudo chown -R $USER:$USER /var/www/jwd1.xyz
 # Install nginx
 sudo apt update && sudo apt install -y nginx
 
-# Configure nginx for jwd1.xyz
+# Configure nginx for jwd1.xyz (static frontend + API reverse proxy)
 sudo tee /etc/nginx/sites-available/jwd1.xyz > /dev/null << 'EOF'
 server {
     listen 80;
@@ -37,6 +37,36 @@ server {
     gzip_min_length 1024;
     gzip_proxied expired no-cache no-store private auth;
     gzip_types text/plain text/css text/xml text/javascript application/x-javascript application/xml application/javascript;
+
+    # Reverse proxy for API requests to backend on port 9001
+    location /api/ {
+        proxy_pass http://127.0.0.1:9001/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+
+    # SSE endpoint - disable buffering for streaming
+    location /api/live/events {
+        proxy_pass http://127.0.0.1:9001/api/live/events;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection '';
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 24h;
+        chunked_transfer_encoding off;
+        add_header Cache-Control "no-cache";
+        add_header X-Accel-Buffering "no";
+    }
 
     location / {
         try_files $uri $uri/ /index.html;
@@ -131,5 +161,6 @@ deploy/
 
 ### View deployment logs
 - Go to GitHub → Actions tab to see deployment logs
+
 
 

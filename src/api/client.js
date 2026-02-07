@@ -1,7 +1,10 @@
 import axios from 'axios'
 
+const baseURL = import.meta.env.VITE_API_BASE_URL || 'https://jwd1.xyz/api'
+const adminSecret = import.meta.env.VITE_ADMIN_SECRET || ''
+
 const api = axios.create({
-  baseURL: 'https://jwd1.xyz/api',
+  baseURL,
   timeout: 15000,
   headers: {
     'Content-Type': 'application/json',
@@ -257,6 +260,14 @@ export const liveApi = {
   // Get recent events from memory buffer
   getRecentEvents: async (params = {}) => {
     const { data } = await api.get('/live/events/recent', { params })
+    return data
+  },
+
+  // Start a new tournament (requires admin auth: set VITE_ADMIN_SECRET to match backend ADMIN_SECRET, or backend DEV_ADMIN=true)
+  startTournament: async () => {
+    const headers = {}
+    if (adminSecret) headers['X-Admin-Secret'] = adminSecret
+    const { data } = await api.post('/admin/tournament/start', {}, { headers })
     return data
   },
 

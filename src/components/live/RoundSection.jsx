@@ -19,9 +19,9 @@ const MATCH_STATE_LABELS = {
   FINISHED: { label: 'FT', color: 'text-primary bg-primary/20' },
 }
 
-export default function RoundSection({ 
-  round, 
-  matches, 
+export default function RoundSection({
+  round,
+  matches,
   isCurrentRound = false,
   isCompleted = false,
   isPending = false,
@@ -42,17 +42,17 @@ export default function RoundSection({
       const awayScore = Number(m.score?.away ?? 0)
       const homePens = Number(m.penaltyScore?.home ?? 0)
       const awayPens = Number(m.penaltyScore?.away ?? 0)
-      
+
       // Check if there's an outright winner (either by regular score or penalties)
       if (homeScore > awayScore) return m.homeTeam
       if (awayScore > homeScore) return m.awayTeam
-      
+
       // Scores are tied - check penalties (only if penalties were actually taken)
       if (homePens > 0 || awayPens > 0) {
         if (homePens > awayPens) return m.homeTeam
         if (awayPens > homePens) return m.awayTeam
       }
-      
+
       // No clear winner (draw - shouldn't happen in knockout)
       return null
     })
@@ -61,10 +61,10 @@ export default function RoundSection({
   return (
     <div className={`
       rounded-2xl border overflow-hidden transition-all duration-300
-      ${isCurrentRound 
-        ? 'border-primary/40 shadow-lg shadow-primary/10 glow-primary' 
-        : isCompleted 
-          ? 'border-border bg-card/50' 
+      ${isCurrentRound
+        ? 'border-primary/40 shadow-lg shadow-primary/10 glow-primary'
+        : isCompleted
+          ? 'border-border bg-card/50'
           : 'border-border/50 bg-card/30'}
     `}>
       {/* Round Header */}
@@ -105,9 +105,9 @@ export default function RoundSection({
       <div className={`p-4 ${matches.length > 2 ? 'grid grid-cols-1 sm:grid-cols-2 gap-3' : 'space-y-3'}`}>
         {matches.length > 0 ? (
           matches.map((match, idx) => (
-            <MatchCard 
-              key={match.fixtureId || idx} 
-              match={match} 
+            <MatchCard
+              key={match.fixtureId || idx}
+              match={match}
               isCurrentRound={isCurrentRound}
               onTeamClick={onTeamClick}
             />
@@ -144,15 +144,30 @@ export default function RoundSection({
 
 function MatchCard({ match, isCurrentRound, onTeamClick }) {
   const { fixtureId, state, minute, score, penaltyScore, homeTeam, awayTeam } = match
-  
+
   // Determine if match has scores (even 0-0 counts as having a score)
   const hasScore = score?.home != null || score?.away != null
   // Only trust explicit FINISHED state - backend handles extra time and penalties
   const isFinished = state === 'FINISHED' || match.isFinished === true
-  
+
   // Get state config - use actual state from backend
+  // Special handling: if match is SCHEDULED but we're in the current round,
+  // it means the round just started and matches should be starting soon
   const getStateConfig = () => {
-    if (MATCH_STATE_LABELS[state]) return MATCH_STATE_LABELS[state]
+    if (MATCH_STATE_LABELS[state]) {
+      // Override SCHEDULED label if this is the current round or has any score
+      if (state === 'SCHEDULED') {
+        // If we're in the current round, show "Starting..." instead of "Upcoming"
+        if (isCurrentRound) {
+          return { label: 'Starting...', color: 'text-amber-400 bg-amber-500/20', live: false }
+        }
+        // If it has a score (even 0-0), it's actually live
+        if (hasScore) {
+          return { label: 'Live', color: 'text-live bg-live/20', live: true }
+        }
+      }
+      return MATCH_STATE_LABELS[state]
+    }
     if (isFinished) return MATCH_STATE_LABELS.FINISHED
     // If match has scores but unknown state, show as in progress
     if (hasScore) return { label: 'Live', color: 'text-live bg-live/20', live: true }
@@ -162,11 +177,11 @@ function MatchCard({ match, isCurrentRound, onTeamClick }) {
   const isLive = stateConfig.live
 
   const homeWon = isFinished && (
-    (score?.home > score?.away) || 
+    (score?.home > score?.away) ||
     (score?.home === score?.away && penaltyScore?.home > penaltyScore?.away)
   )
   const awayWon = isFinished && (
-    (score?.away > score?.home) || 
+    (score?.away > score?.home) ||
     (score?.home === score?.away && penaltyScore?.away > penaltyScore?.home)
   )
 
@@ -175,8 +190,8 @@ function MatchCard({ match, isCurrentRound, onTeamClick }) {
       to={`/live/${fixtureId}`}
       className={`
         block p-4 rounded-xl border transition-all duration-200
-        ${isLive 
-          ? 'bg-card border-live/30 shadow-md shadow-live/10 hover:shadow-lg hover:shadow-live/20' 
+        ${isLive
+          ? 'bg-card border-live/30 shadow-md shadow-live/10 hover:shadow-lg hover:shadow-live/20'
           : 'bg-card border-border hover:border-primary/30'}
       `}
     >
@@ -189,7 +204,7 @@ function MatchCard({ match, isCurrentRound, onTeamClick }) {
           {isLive && <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />}
           {isLive && minute !== undefined ? `${minute}'` : stateConfig.label}
         </span>
-        
+
         {(penaltyScore?.home > 0 || penaltyScore?.away > 0) && (
           <span className="text-xs text-text-muted">
             Pens: {penaltyScore.home}-{penaltyScore.away}

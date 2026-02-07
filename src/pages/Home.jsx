@@ -25,6 +25,8 @@ export default function Home() {
   const [topTeams, setTopTeams] = useState([])
   const [liveStatus, setLiveStatus] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [starting, setStarting] = useState(false)
+  const [startError, setStartError] = useState(null)
 
   useEffect(() => {
     const fetchData = async () => {
@@ -60,6 +62,28 @@ export default function Home() {
 
   const isLive = liveStatus?.tournament?.state && 
     ['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(liveStatus.tournament.state)
+
+  const isPaused = liveStatus?.simulation?.isPaused === true
+  const tournamentIdle = !liveStatus?.tournament?.state || 
+    ['IDLE', 'COMPLETE', 'RESULTS'].includes(liveStatus.tournament.state)
+  const canStartTournament = tournamentIdle && !starting
+
+  const handleStartTournament = async () => {
+    if (!canStartTournament) return
+    setStarting(true)
+    setStartError(null)
+    try {
+      await liveApi.startTournament()
+      // Refresh status after starting
+      const statusRes = await liveApi.getStatus()
+      setLiveStatus(statusRes)
+    } catch (error) {
+      console.error('Failed to start tournament:', error)
+      setStartError(error.response?.data?.message || error.response?.data?.error || error.message || 'Failed to start tournament')
+    } finally {
+      setStarting(false)
+    }
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -122,7 +146,7 @@ export default function Home() {
                   <div className="space-y-2">
                     {liveStatus.tournament.state === 'IDLE' ? (
                       <p className="text-text-muted">
-                        Next tournament starts at <span className="font-mono text-primary font-bold">:55</span> past the hour
+                        Next tournament starts 5 minutes after the previous one finishes
                       </p>
                     ) : liveStatus.tournament.state === 'COMPLETE' || liveStatus.tournament.state === 'RESULTS' ? (
                       <div className="flex items-center justify-center md:justify-start gap-2">
@@ -166,6 +190,46 @@ export default function Home() {
             </div>
           </div>
         </Link>
+      </div>
+
+      {/* Start Tournament Button */}
+      <div className="mb-10 flex flex-col items-center gap-3">
+        <button
+          onClick={handleStartTournament}
+          disabled={!canStartTournament}
+          className={`
+            relative px-8 py-4 rounded-2xl font-bold text-lg transition-all duration-300
+            ${canStartTournament
+              ? 'bg-gradient-to-r from-primary to-primary-dark text-white shadow-xl shadow-primary/30 hover:shadow-2xl hover:shadow-primary/40 hover:scale-105 cursor-pointer active:scale-95'
+              : 'bg-gray-700/50 text-gray-500 border border-gray-600/30 cursor-not-allowed'}
+          `}
+        >
+          <span className="flex items-center gap-3">
+            {starting ? (
+              <>
+                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Starting...
+              </>
+            ) : (
+              <>
+                🏆 Start Tournament
+              </>
+            )}
+          </span>
+        </button>
+        {!tournamentIdle && liveStatus && (
+          <p className="text-sm text-text-muted">
+            A tournament is already in progress
+          </p>
+        )}
+        {startError && (
+          <p className="text-sm text-live font-medium">
+            {startError}
+          </p>
+        )}
       </div>
 
       {/* Quick Stats Summary */}

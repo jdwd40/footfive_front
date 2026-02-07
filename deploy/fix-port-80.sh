@@ -24,3 +24,6 @@ echo ""
 echo "Then retry: sudo certbot --nginx -d jwd1.xyz -d www.jwd1.xyz"
 
 
+
+
+

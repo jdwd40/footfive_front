@@ -13,25 +13,32 @@ const MATCH_STATE_CONFIG = {
 }
 
 export default function LiveMatchCard({ match, compact = false }) {
-  const { 
-    fixtureId, 
-    state, 
-    minute, 
-    score, 
-    penaltyScore, 
-    homeTeam, 
-    awayTeam, 
-    isFinished 
+  const {
+    fixtureId,
+    state,
+    minute,
+    score,
+    penaltyScore,
+    homeTeam,
+    awayTeam,
+    isFinished
   } = match
 
   // Determine if match has scores (even 0-0 counts as having a score)
   const hasScore = score?.home != null || score?.away != null
   // Only trust explicit FINISHED state - backend handles extra time and penalties
   const matchIsFinished = state === 'FINISHED' || isFinished === true
-  
+
   // Get state config - use actual state from backend
+  // Special handling: if match is SCHEDULED but has scores, it's actually playing
   const getStateConfig = () => {
-    if (MATCH_STATE_CONFIG[state]) return MATCH_STATE_CONFIG[state]
+    if (MATCH_STATE_CONFIG[state]) {
+      // Override SCHEDULED if match has any score (means it's actually playing)
+      if (state === 'SCHEDULED' && hasScore) {
+        return { label: 'Live', color: 'bg-emerald-500/20 text-emerald-400', pulse: true }
+      }
+      return MATCH_STATE_CONFIG[state]
+    }
     if (matchIsFinished) return MATCH_STATE_CONFIG.FINISHED
     // If match has scores but unknown state, show as in progress
     if (hasScore) return MATCH_STATE_CONFIG.FIRST_HALF
@@ -43,7 +50,7 @@ export default function LiveMatchCard({ match, compact = false }) {
 
   if (compact) {
     return (
-      <Link 
+      <Link
         to={`/live/${fixtureId}`}
         className="block p-3 rounded-xl bg-card hover:bg-card-hover border border-border transition-all hover:border-primary/30"
       >
@@ -85,7 +92,7 @@ export default function LiveMatchCard({ match, compact = false }) {
   }
 
   return (
-    <Link 
+    <Link
       to={`/live/${fixtureId}`}
       className={`
         block p-4 sm:p-5 rounded-2xl bg-card border transition-all duration-300
@@ -135,7 +142,7 @@ export default function LiveMatchCard({ match, compact = false }) {
               {score?.away ?? 0}
             </span>
           </div>
-          
+
           {/* Penalty Score */}
           {hasPenalties && (
             <p className="text-xs text-text-muted mt-1">

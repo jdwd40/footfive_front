@@ -73,7 +73,7 @@ function normalizeRound(name) {
 // and uses the winners from those matches
 function resolveTeamsFromBracket(fixtures) {
   if (!fixtures || fixtures.length === 0) return fixtures
-  
+
   // Build a map of bracketSlot -> fixture for quick lookup
   const slotToFixture = {}
   fixtures.forEach(f => {
@@ -81,7 +81,7 @@ function resolveTeamsFromBracket(fixtures) {
       slotToFixture[f.bracketSlot] = f
     }
   })
-  
+
   // Find feeder matches for each fixture
   const feedersMap = {} // bracketSlot -> [feeder fixtures]
   fixtures.forEach(f => {
@@ -92,53 +92,53 @@ function resolveTeamsFromBracket(fixtures) {
       feedersMap[f.feedsInto].push(f)
     }
   })
-  
+
   // Helper to get winner team from a finished match
   const getWinnerTeam = (match) => {
     if (!match || !match.isFinished) return null
-    
+
     // Use winnerId if available
     if (match.winnerId) {
       if (match.homeTeam?.id === match.winnerId) return match.homeTeam
       if (match.awayTeam?.id === match.winnerId) return match.awayTeam
     }
-    
+
     // Fall back to score comparison
     const homeScore = (match.score?.home || 0) + (match.penaltyScore?.home || 0) * 0.001
     const awayScore = (match.score?.away || 0) + (match.penaltyScore?.away || 0) * 0.001
-    
+
     if (homeScore > awayScore) return match.homeTeam
     if (awayScore > homeScore) return match.awayTeam
-    
+
     return null
   }
-  
+
   // Resolve teams for fixtures with null homeTeam or awayTeam
   return fixtures.map(fixture => {
     // If both teams are already set, no need to resolve
     if (fixture.homeTeam && fixture.awayTeam) return fixture
-    
+
     // Find feeder matches for this fixture
     const feeders = feedersMap[fixture.bracketSlot] || []
     if (feeders.length === 0) return fixture
-    
+
     // Sort feeders by their bracketSlot to ensure consistent ordering
     // e.g., R16_1 and R16_2 feed into QF1, where R16_1 winner is home, R16_2 winner is away
     feeders.sort((a, b) => (a.bracketSlot || '').localeCompare(b.bracketSlot || ''))
-    
+
     let resolvedHomeTeam = fixture.homeTeam
     let resolvedAwayTeam = fixture.awayTeam
-    
+
     // First feeder's winner goes to homeTeam
     if (!resolvedHomeTeam && feeders[0]) {
       resolvedHomeTeam = getWinnerTeam(feeders[0])
     }
-    
+
     // Second feeder's winner goes to awayTeam
     if (!resolvedAwayTeam && feeders[1]) {
       resolvedAwayTeam = getWinnerTeam(feeders[1])
     }
-    
+
     // Return updated fixture if anything changed
     if (resolvedHomeTeam !== fixture.homeTeam || resolvedAwayTeam !== fixture.awayTeam) {
       return {
@@ -147,7 +147,7 @@ function resolveTeamsFromBracket(fixtures) {
         awayTeam: resolvedAwayTeam,
       }
     }
-    
+
     return fixture
   })
 }
@@ -161,28 +161,28 @@ export const useLiveStore = create((set, get) => ({
 
   // Simulation state
   simulation: null,
-  
+
   // Tournament state
   tournament: null,
   // Last completed tournament snapshot (kept until next tournament starts)
   lastCompletedTournament: null,
   lastCompletedFixtures: [],
-  
+
   // All fixtures for current tournament (completed + active + upcoming)
   fixtures: [],
-  
+
   // Active matches (currently being played) - kept for backward compatibility
   matches: [],
-  
+
   // Completed matches in current tournament - kept for backward compatibility
   completedMatches: [],
-  
+
   // Upcoming fixtures for next round (available during both active rounds and breaks)
   upcomingFixtures: [],
-  
+
   // Recent events buffer (all events from current round)
   recentEvents: [],
-  
+
   // Loading states
   isLoading: false,
   isInitialLoad: true,
@@ -195,20 +195,20 @@ export const useLiveStore = create((set, get) => ({
   // Fetch full snapshot (status + fixtures)
   fetchSnapshot: async () => {
     set({ isLoading: true, error: null })
-    
+
     try {
       const [statusRes, fixturesRes] = await Promise.all([
         liveApi.getStatus(),
-        liveApi.getFixtures(),
+        liveApi.getFixtures().catch(() => ({ fixtures: [] })),
       ])
-      
+
       const rawFixtures = fixturesRes.fixtures || []
       // Resolve teams from bracket structure for fixtures with null teams
       const allFixtures = resolveTeamsFromBracket(rawFixtures)
       const newTournament = statusRes.tournament
       const newTournamentId = newTournament?.tournamentId
       const newState = newTournament?.state
-      
+
       set(state => {
         let tournamentToSet = newTournament
         let lastCompletedTournament = state.lastCompletedTournament
@@ -254,19 +254,19 @@ export const useLiveStore = create((set, get) => ({
         // IMPORTANT: Merge API fixtures with current state to prevent SSE updates from being overwritten
         // State progression order (higher index = more advanced state)
         const STATE_ORDER = ['SCHEDULED', 'FIRST_HALF', 'HALFTIME', 'SECOND_HALF', 'EXTRA_TIME_1', 'ET_HALFTIME', 'EXTRA_TIME_2', 'PENALTIES', 'FINISHED']
-        
+
         const mergedFixtures = allFixtures.map(apiFixture => {
           // Find existing fixture in current state
-          const existingFixture = state.fixtures.find(f => 
+          const existingFixture = state.fixtures.find(f =>
             f.fixtureId == apiFixture.fixtureId || String(f.fixtureId) === String(apiFixture.fixtureId)
           )
-          
+
           if (!existingFixture) return apiFixture
-          
+
           // Get state indices (higher = more advanced)
           const apiStateIdx = STATE_ORDER.indexOf(apiFixture.state)
           const existingStateIdx = STATE_ORDER.indexOf(existingFixture.state)
-          
+
           // If existing state is more advanced (from SSE), keep it
           // This prevents polling from reverting SSE updates
           if (existingStateIdx > apiStateIdx && existingStateIdx >= 0) {
@@ -280,7 +280,7 @@ export const useLiveStore = create((set, get) => ({
               isFinished: existingFixture.isFinished,
             }
           }
-          
+
           return apiFixture
         })
 
@@ -292,19 +292,19 @@ export const useLiveStore = create((set, get) => ({
         // This works during both active rounds AND break periods
         const currentState = newState || tournamentToSet?.state
         const nextRoundName = normalizeRound(STATE_TO_NEXT_ROUND[currentState])
-        
+
         // Filter for SCHEDULED fixtures in the next round only
         // STRICT check: only explicit SCHEDULED state counts as upcoming
         // A match with ANY score (including 0-0) is NOT upcoming
         const upcomingFixtures = nextRoundName
           ? mergedFixtures.filter(m => {
-              const matchRound = normalizeRound(m.round)
-              const isExplicitlyScheduled = m.state === 'SCHEDULED'
-              const hasNullScore = m.score?.home == null && m.score?.away == null
-              const isNotFinished = !m.isFinished && m.state !== 'FINISHED'
-              
-              return matchRound === nextRoundName && isExplicitlyScheduled && hasNullScore && isNotFinished
-            })
+            const matchRound = normalizeRound(m.round)
+            const isExplicitlyScheduled = m.state === 'SCHEDULED'
+            const hasNullScore = m.score?.home == null && m.score?.away == null
+            const isNotFinished = !m.isFinished && m.state !== 'FINISHED'
+
+            return matchRound === nextRoundName && isExplicitlyScheduled && hasNullScore && isNotFinished
+          })
           : []
 
         return {
@@ -322,13 +322,13 @@ export const useLiveStore = create((set, get) => ({
           error: null,
         }
       })
-      
+
       return { status: statusRes, fixtures: fixturesRes }
     } catch (err) {
       console.error('[LiveStore] fetchSnapshot error:', err)
-      
+
       // Try fallback - set a default IDLE state so the page still renders
-      set({ 
+      set({
         tournament: { state: 'IDLE', tournamentId: null },
         fixtures: [],
         matches: [],
@@ -367,20 +367,20 @@ export const useLiveStore = create((set, get) => ({
   // Handle incoming SSE event
   handleEvent: (event) => {
     const { type, fixtureId, score, penaltyScore } = event
-    
+
     // Add to recent events buffer (keep last 50)
     set(state => ({
       recentEvents: [...state.recentEvents, event].slice(-50),
       lastUpdated: Date.now(),
     }))
-    
+
     // Helper to match fixture IDs (handles type mismatches between string/number)
     const matchesFixtureId = (m, targetId) => {
       if (!m?.fixtureId || !targetId) return false
       // Use loose equality to handle string/number mismatches
       return m.fixtureId == targetId || String(m.fixtureId) === String(targetId)
     }
-    
+
     // Handle specific event types
     switch (type) {
       case 'goal':
@@ -389,12 +389,12 @@ export const useLiveStore = create((set, get) => ({
         // Update match score in fixtures array
         if (fixtureId && score) {
           set(state => ({
-            fixtures: state.fixtures.map(m => 
+            fixtures: state.fixtures.map(m =>
               matchesFixtureId(m, fixtureId)
                 ? { ...m, score, penaltyScore: penaltyScore || m.penaltyScore }
                 : m
             ),
-            matches: state.matches.map(m => 
+            matches: state.matches.map(m =>
               matchesFixtureId(m, fixtureId)
                 ? { ...m, score, penaltyScore: penaltyScore || m.penaltyScore }
                 : m
@@ -402,7 +402,7 @@ export const useLiveStore = create((set, get) => ({
           }))
         }
         break
-        
+
       case 'halftime':
       case 'second_half_start':
       case 'extra_time_start':
@@ -432,26 +432,40 @@ export const useLiveStore = create((set, get) => ({
           }
         }
         break
-        
+
       case 'fulltime':
         // fulltime = end of 90 minutes, NOT the end of match in knockout tournaments
         // In knockout, if scores are tied, match continues to extra time
         // Do NOT mark as finished - wait for match_end event
         console.log('[LiveStore] fulltime event - match may continue to extra time if tied')
         break
-        
+
       case 'match_start':
-        // Update match state in fixtures array
+        // Update match state in fixtures array - handles simultaneous match starts
         set(state => {
           const fixtureExists = state.fixtures.some(m => matchesFixtureId(m, fixtureId))
           if (fixtureExists) {
+            const updatedFixtures = state.fixtures.map(m =>
+              matchesFixtureId(m, fixtureId)
+                ? { ...m, state: 'FIRST_HALF', isFinished: false, score: m.score || { home: 0, away: 0 } }
+                : m
+            )
+            // Find the updated fixture to add to active matches if not already there
+            const startedMatch = updatedFixtures.find(m => matchesFixtureId(m, fixtureId))
+            const matchExists = state.matches.some(m => matchesFixtureId(m, fixtureId))
+
             return {
-              fixtures: state.fixtures.map(m =>
-                matchesFixtureId(m, fixtureId) ? { ...m, state: 'FIRST_HALF', isFinished: false, score: m.score || { home: 0, away: 0 } } : m
-              ),
-              matches: state.matches.map(m =>
-                matchesFixtureId(m, fixtureId) ? { ...m, state: 'FIRST_HALF', score: m.score || { home: 0, away: 0 } } : m
-              )
+              fixtures: updatedFixtures,
+              // Add to matches array if not already tracking it
+              matches: matchExists
+                ? state.matches.map(m => matchesFixtureId(m, fixtureId)
+                  ? { ...m, state: 'FIRST_HALF', score: m.score || { home: 0, away: 0 } }
+                  : m)
+                : startedMatch
+                  ? [...state.matches, startedMatch]
+                  : state.matches,
+              // Remove from upcoming if it was there
+              upcomingFixtures: state.upcomingFixtures.filter(m => !matchesFixtureId(m, fixtureId))
             }
           }
           // If fixture doesn't exist and we have team data, add it
@@ -478,16 +492,16 @@ export const useLiveStore = create((set, get) => ({
           return state
         })
         break
-        
+
       case 'match_end':
       case 'shootout_end':
         // Update fixture to finished state - this is when the match truly ends
         set(state => {
           const fixture = state.fixtures.find(m => matchesFixtureId(m, fixtureId))
           if (fixture) {
-            const updatedFixture = { 
-              ...fixture, 
-              isFinished: true, 
+            const updatedFixture = {
+              ...fixture,
+              isFinished: true,
               state: 'FINISHED',
               score: score || fixture.score,
               penaltyScore: penaltyScore || fixture.penaltyScore,
@@ -503,37 +517,79 @@ export const useLiveStore = create((set, get) => ({
           return state
         })
         break
-        
+
       case 'round_start':
-        // Refetch matches for new round
+        // Start ALL matches for this round immediately
+        // This ensures all matches in a round start simultaneously
+        set(state => {
+          const roundName = event.round || event.roundName
+
+          // If we have explicit match IDs from the event, use those
+          if (event.fixtureIds && Array.isArray(event.fixtureIds)) {
+            return {
+              fixtures: state.fixtures.map(m => {
+                if (event.fixtureIds.includes(m.fixtureId) || event.fixtureIds.includes(String(m.fixtureId))) {
+                  return { ...m, state: 'FIRST_HALF', score: m.score || { home: 0, away: 0 }, isFinished: false }
+                }
+                return m
+              }),
+              matches: state.fixtures
+                .filter(m => event.fixtureIds.includes(m.fixtureId) || event.fixtureIds.includes(String(m.fixtureId)))
+                .map(m => ({ ...m, state: 'FIRST_HALF', score: m.score || { home: 0, away: 0 }, isFinished: false }))
+            }
+          }
+
+          // Otherwise, start all SCHEDULED matches for the given round
+          if (roundName) {
+            const normalizedRound = normalizeRound(roundName)
+            return {
+              fixtures: state.fixtures.map(m => {
+                const matchRound = normalizeRound(m.round)
+                if (matchRound === normalizedRound && m.state === 'SCHEDULED') {
+                  return { ...m, state: 'FIRST_HALF', score: m.score || { home: 0, away: 0 }, isFinished: false }
+                }
+                return m
+              }),
+              matches: state.fixtures
+                .filter(m => normalizeRound(m.round) === normalizedRound)
+                .map(m => m.state === 'SCHEDULED'
+                  ? { ...m, state: 'FIRST_HALF', score: m.score || { home: 0, away: 0 }, isFinished: false }
+                  : m
+                )
+            }
+          }
+
+          return state
+        })
+        // Also refetch to ensure consistency with backend
         get().fetchSnapshot()
         break
-        
+
       case 'round_complete':
         // Refetch to get updated tournament state
         get().fetchSnapshot()
         break
-      
+
       case 'state_change':
       case 'tournament_state':
         // Tournament state changed - refetch everything
         get().fetchSnapshot()
         break
-        
+
       case 'tournament_end':
         // Tournament complete - show winner
         set(state => ({
-          tournament: state.tournament 
-            ? { 
-                ...state.tournament, 
-                state: 'RESULTS',
-                winner: event.winner,
-                runnerUp: event.runnerUp,
-              }
+          tournament: state.tournament
+            ? {
+              ...state.tournament,
+              state: 'RESULTS',
+              winner: event.winner,
+              runnerUp: event.runnerUp,
+            }
             : state.tournament
         }))
         break
-        
+
       default:
         // Ignore other events
         break
@@ -609,15 +665,15 @@ export const useLiveStore = create((set, get) => ({
     const { fixtures, completedMatches, matches } = get()
     // Prefer fixtures array if available
     const allMatches = fixtures.length > 0 ? fixtures : [...completedMatches, ...matches]
-    
+
     const grouped = {}
     ROUND_ORDER.forEach(round => {
-      grouped[round] = allMatches.filter(m => 
-        m.round === round || 
+      grouped[round] = allMatches.filter(m =>
+        m.round === round ||
         m.round?.toLowerCase().includes(round.toLowerCase().replace('-', ''))
       )
     })
-    
+
     return grouped
   },
 
@@ -626,9 +682,9 @@ export const useLiveStore = create((set, get) => ({
     const { fixtures, completedMatches, matches } = get()
     // Prefer fixtures array if available
     const allMatches = fixtures.length > 0 ? fixtures : [...completedMatches, ...matches]
-    
-    return allMatches.filter(m => 
-      m.round === roundName || 
+
+    return allMatches.filter(m =>
+      m.round === roundName ||
       m.round?.toLowerCase().includes(roundName.toLowerCase().replace('-', ''))
     )
   },
@@ -641,7 +697,7 @@ export const useLiveStore = create((set, get) => ({
   // Get live (in-progress) matches
   getLiveMatches: () => {
     const { matches } = get()
-    return matches.filter(m => 
+    return matches.filter(m =>
       ['FIRST_HALF', 'SECOND_HALF', 'EXTRA_TIME_1', 'EXTRA_TIME_2', 'PENALTIES', 'HALFTIME', 'ET_HALFTIME'].includes(m.state)
     )
   },
@@ -655,7 +711,7 @@ export const useLiveStore = create((set, get) => ({
   // Get goal events from recent events
   getRecentGoals: () => {
     const { recentEvents } = get()
-    return recentEvents.filter(e => 
+    return recentEvents.filter(e =>
       ['goal', 'penalty_scored', 'shootout_goal'].includes(e.type)
     )
   },
