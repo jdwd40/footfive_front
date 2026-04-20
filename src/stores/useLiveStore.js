@@ -1,10 +1,19 @@
 import { create } from 'zustand'
 import { liveApi } from '../api/client'
+import {
+  normalizeLiveEvent,
+  dedupeLiveEventsBySeq,
+  sortLiveEventsDesc,
+} from '../utils/liveEventModel'
+import { isTournamentPlayingState, isTournamentBreakLikeState } from '../utils/tournamentPhases'
 
-// Tournament state labels
+// Tournament state labels (v2 event-driven + legacy state names)
 const TOURNAMENT_STATE_LABELS = {
   IDLE: 'Waiting for Tournament',
   SETUP: 'Tournament Starting Soon',
+  ROUND_ACTIVE: 'Round In Progress',
+  ROUND_COMPLETE: 'Round Complete',
+  INTER_ROUND_DELAY: 'Next Round Starting Soon',
   ROUND_OF_16: 'Round of 16',
   QF_BREAK: 'Quarter-Finals Starting',
   QUARTER_FINALS: 'Quarter-Finals',
@@ -29,11 +38,11 @@ const MATCH_STATE_LABELS = {
   FINISHED: 'Full Time',
 }
 
-// Round order for sorting
+// Round order for sorting / progression
 const ROUND_ORDER = ['Round of 16', 'Quarter-finals', 'Semi-finals', 'Final']
 
-// Map tournament state to current round name
-const STATE_TO_ROUND = {
+/** Legacy: map tournament.state -> display round when API omits currentRound */
+const LEGACY_STATE_TO_ROUND = {
   ROUND_OF_16: 'Round of 16',
   QF_BREAK: 'Quarter-finals',
   QUARTER_FINALS: 'Quarter-finals',
@@ -43,8 +52,7 @@ const STATE_TO_ROUND = {
   FINAL: 'Final',
 }
 
-// Map tournament state to next round name
-const STATE_TO_NEXT_ROUND = {
+const LEGACY_STATE_TO_NEXT_ROUND = {
   SETUP: 'Round of 16',
   ROUND_OF_16: 'Quarter-finals',
   QF_BREAK: 'Quarter-finals',
@@ -52,6 +60,30 @@ const STATE_TO_NEXT_ROUND = {
   SF_BREAK: 'Semi-finals',
   SEMI_FINALS: 'Final',
   FINAL_BREAK: 'Final',
+}
+
+function currentRoundFromTournament(tournament) {
+  if (!tournament) return null
+  const fromApi =
+    tournament.currentRound ??
+    tournament.currentRoundName ??
+    tournament.currentRoundKey
+  const normalized = normalizeRound(fromApi)
+  if (normalized) return normalized
+  return LEGACY_STATE_TO_ROUND[tournament.state] || null
+}
+
+function nextRoundFromTournament(tournament) {
+  if (!tournament) return null
+  const explicit = tournament.nextRound ?? tournament.nextRoundName ?? tournament.nextRoundKey
+  const n = normalizeRound(explicit)
+  if (n) return n
+  const cur = currentRoundFromTournament(tournament)
+  if (cur) {
+    const idx = ROUND_ORDER.indexOf(cur)
+    if (idx >= 0 && idx < ROUND_ORDER.length - 1) return ROUND_ORDER[idx + 1]
+  }
+  return LEGACY_STATE_TO_NEXT_ROUND[tournament?.state] || null
 }
 
 const ROUND_NORMALIZATION = [
@@ -183,9 +215,18 @@ export const useLiveStore = create((set, get) => ({
   // Recent events buffer (all events from current round)
   recentEvents: [],
 
+  /** @type {Record<string, object[]>} Per-fixture event cache for drop-in viewers */
+  matchEventsByFixtureId: {},
+
   // Loading states
   isLoading: false,
   isInitialLoad: true,
+
+  // Auto-cycle state (persists across navigation so countdown continues)
+  // Phase: null | 'WINNER_DISPLAY' | 'STARTING_TOURNAMENT' | 'FIXTURES_PREVIEW'
+  autoCyclePhase: null,
+  autoCyclePhaseStartTime: null,
+  autoCycledTournamentId: null,
 
   // Actions
   setConnected: (connected) => set({ connected }),
@@ -290,8 +331,7 @@ export const useLiveStore = create((set, get) => ({
 
         // Determine next round fixtures - always show upcoming fixtures for the next round
         // This works during both active rounds AND break periods
-        const currentState = newState || tournamentToSet?.state
-        const nextRoundName = normalizeRound(STATE_TO_NEXT_ROUND[currentState])
+        const nextRoundName = normalizeRound(nextRoundFromTournament(tournamentToSet))
 
         // Filter for SCHEDULED fixtures in the next round only
         // STRICT check: only explicit SCHEDULED state counts as upcoming
@@ -307,6 +347,15 @@ export const useLiveStore = create((set, get) => ({
           })
           : []
 
+        // If the server says we're in a live round or have active matches, clear auto-cycle
+        // so the Live Dashboard shows the actual tournament instead of a stale countdown
+        // (e.g. tournament was started by another tab or by the backend)
+        const isLiveRound = isTournamentPlayingState(newState)
+        const hasActiveMatchesNow = activeMatches.length > 0
+        const clearAutoCycleState = isLiveRound || hasActiveMatchesNow
+          ? { autoCyclePhase: null, autoCyclePhaseStartTime: null, autoCycledTournamentId: null }
+          : {}
+
         return {
           simulation: statusRes.simulation,
           tournament: newTournament, // Always use actual tournament state for header
@@ -320,6 +369,7 @@ export const useLiveStore = create((set, get) => ({
           isInitialLoad: false,
           lastUpdated: Date.now(),
           error: null,
+          ...clearAutoCycleState,
         }
       })
 
@@ -366,13 +416,23 @@ export const useLiveStore = create((set, get) => ({
 
   // Handle incoming SSE event
   handleEvent: (event) => {
-    const { type, fixtureId, score, penaltyScore } = event
+    const normalized = normalizeLiveEvent(event) || event
+    const { type, fixtureId, score, penaltyScore } = normalized
 
-    // Add to recent events buffer (keep last 50)
-    set(state => ({
-      recentEvents: [...state.recentEvents, event].slice(-50),
-      lastUpdated: Date.now(),
-    }))
+    set((state) => {
+      let matchEventsByFixtureId = state.matchEventsByFixtureId
+      if (fixtureId != null && normalized.type !== 'connected') {
+        const key = String(fixtureId)
+        const prev = matchEventsByFixtureId[key] || []
+        const next = dedupeLiveEventsBySeq([...prev, normalized]).slice(-150)
+        matchEventsByFixtureId = { ...matchEventsByFixtureId, [key]: next }
+      }
+      return {
+        matchEventsByFixtureId,
+        recentEvents: [...state.recentEvents, normalized].slice(-80),
+        lastUpdated: Date.now(),
+      }
+    })
 
     // Helper to match fixture IDs (handles type mismatches between string/number)
     const matchesFixtureId = (m, targetId) => {
@@ -407,7 +467,9 @@ export const useLiveStore = create((set, get) => ({
       case 'second_half_start':
       case 'extra_time_start':
       case 'et_halftime':
+      case 'extra_time_half':
       case 'extra_time_2_start':
+      case 'extra_time_end':
       case 'shootout_start':
         // Update match state in fixtures array (but NOT fulltime - that doesn't end knockout matches!)
         if (fixtureId) {
@@ -416,7 +478,9 @@ export const useLiveStore = create((set, get) => ({
             second_half_start: 'SECOND_HALF',
             extra_time_start: 'EXTRA_TIME_1',
             et_halftime: 'ET_HALFTIME',
+            extra_time_half: 'ET_HALFTIME',
             extra_time_2_start: 'EXTRA_TIME_2',
+            extra_time_end: 'EXTRA_TIME_2',
             shootout_start: 'PENALTIES',
           }
           const newState = stateMap[type]
@@ -469,17 +533,17 @@ export const useLiveStore = create((set, get) => ({
             }
           }
           // If fixture doesn't exist and we have team data, add it
-          if (event.homeTeam && event.awayTeam) {
+          if (normalized.homeTeam && normalized.awayTeam) {
             const newFixture = {
               fixtureId,
               state: 'FIRST_HALF',
               minute: 0,
               score: { home: 0, away: 0 },
               penaltyScore: { home: 0, away: 0 },
-              homeTeam: event.homeTeam,
-              awayTeam: event.awayTeam,
+              homeTeam: normalized.homeTeam,
+              awayTeam: normalized.awayTeam,
               isFinished: false,
-              round: event.round || state.tournament?.currentRound || 'Round of 16',
+              round: normalized.round || currentRoundFromTournament(state.tournament) || 'Round of 16',
             }
             return {
               fixtures: [...state.fixtures, newFixture],
@@ -629,28 +693,25 @@ export const useLiveStore = create((set, get) => ({
   isTournamentActive: () => {
     const { tournament } = get()
     if (!tournament?.state) return false
-    return ['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(tournament.state)
+    return isTournamentPlayingState(tournament.state)
   },
 
   // Check if in break period
   isBreakPeriod: () => {
     const { tournament } = get()
-    if (!tournament?.state) return false
-    return ['SETUP', 'QF_BREAK', 'SF_BREAK', 'FINAL_BREAK'].includes(tournament.state)
+    return isTournamentBreakLikeState(tournament?.state)
   },
 
   // Get current round name
   getCurrentRound: () => {
     const { tournament } = get()
-    if (!tournament?.state) return null
-    return STATE_TO_ROUND[tournament.state] || tournament.currentRound
+    return currentRoundFromTournament(tournament)
   },
 
   // Get next round name (works for both active rounds and break periods)
   getNextRound: () => {
     const { tournament } = get()
-    if (!tournament?.state) return null
-    return STATE_TO_NEXT_ROUND[tournament.state] || null
+    return nextRoundFromTournament(tournament)
   },
 
   // Get all matches for bracket (active + completed)
@@ -702,10 +763,15 @@ export const useLiveStore = create((set, get) => ({
     )
   },
 
-  // Get recent events for a specific match
+  // Get recent events for a specific match (cache + global buffer)
   getEventsForMatch: (fixtureId) => {
-    const { recentEvents } = get()
-    return recentEvents.filter(e => e.fixtureId == fixtureId || String(e.fixtureId) === String(fixtureId))
+    const { recentEvents, matchEventsByFixtureId } = get()
+    const key = String(fixtureId)
+    const cached = matchEventsByFixtureId[key] || []
+    const fromRecent = recentEvents.filter(
+      (e) => e.fixtureId == fixtureId || String(e.fixtureId) === String(fixtureId)
+    )
+    return sortLiveEventsDesc(dedupeLiveEventsBySeq([...cached, ...fromRecent]))
   },
 
   // Get goal events from recent events
@@ -734,6 +800,7 @@ export const useLiveStore = create((set, get) => ({
     completedMatches: [],
     upcomingFixtures: [],
     recentEvents: [],
+    matchEventsByFixtureId: {},
     isLoading: false,
     isInitialLoad: true,
   }),
@@ -742,7 +809,27 @@ export const useLiveStore = create((set, get) => ({
   clearCompletedMatches: () => set({ completedMatches: [], upcomingFixtures: [] }),
 
   // Clear events (on new round)
-  clearEvents: () => set({ recentEvents: [] }),
+  clearEvents: () => set({ recentEvents: [], matchEventsByFixtureId: {} }),
+
+  // Auto-cycle actions (countdown continues across navigation)
+  startAutoCycleWinnerDisplay: (tournamentId) => set({
+    autoCyclePhase: 'WINNER_DISPLAY',
+    autoCyclePhaseStartTime: Date.now(),
+    autoCycledTournamentId: tournamentId,
+  }),
+  setAutoCycleFixturesPreview: () => set({
+    autoCyclePhase: 'FIXTURES_PREVIEW',
+    autoCyclePhaseStartTime: Date.now(),
+  }),
+  setAutoCyclePhaseStartNow: () => set(() => ({
+    autoCyclePhaseStartTime: Date.now(),
+  })),
+  setAutoCycleStartingTournament: () => set({ autoCyclePhase: 'STARTING_TOURNAMENT' }),
+  clearAutoCycle: () => set({
+    autoCyclePhase: null,
+    autoCyclePhaseStartTime: null,
+    autoCycledTournamentId: null,
+  }),
 }))
 
 export default useLiveStore

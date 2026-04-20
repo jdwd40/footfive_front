@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { normalizeLiveEventsList } from '../utils/liveEventModel'
 
 const baseURL = import.meta.env.VITE_API_BASE_URL || 'https://jwd1.xyz/api'
 const adminSecret = import.meta.env.VITE_ADMIN_SECRET || ''
@@ -257,32 +258,63 @@ export const liveApi = {
     return data
   },
 
-  // Get recent events from memory buffer
+  // Get recent events from memory buffer (events normalized to unified live shape)
   getRecentEvents: async (params = {}) => {
     const { data } = await api.get('/live/events/recent', { params })
-    return data
+    return {
+      ...data,
+      events: normalizeLiveEventsList(data.events || []),
+    }
   },
 
   // Start a new tournament (requires admin auth: set VITE_ADMIN_SECRET to match backend ADMIN_SECRET, or backend DEV_ADMIN=true)
   startTournament: async () => {
     const headers = {}
     if (adminSecret) headers['X-Admin-Secret'] = adminSecret
-    const { data } = await api.post('/admin/tournament/start', {}, { headers })
-    return data
+    
+    const url = `${baseURL}/admin/tournament/start`
+    console.log('[startTournament] Request details:', {
+      url,
+      method: 'POST',
+      headers,
+      body: {}
+    })
+    
+    try {
+      const { data } = await api.post('/admin/tournament/start', {}, { headers })
+      console.log('[startTournament] Success:', data)
+      return data
+    } catch (error) {
+      console.error('[startTournament] Error details:', {
+        url,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        responseData: error.response?.data,
+        message: error.message,
+        code: error.code,
+        isNetworkError: !error.response
+      })
+      throw error
+    }
   },
 
   // Get SSE stream URL for real-time events
   getEventsStreamUrl: (params = {}) => {
     const baseUrl = api.defaults.baseURL
     const queryParams = new URLSearchParams()
-    
+
     if (params.fixtureId) queryParams.set('fixtureId', params.fixtureId)
     if (params.tournamentId) queryParams.set('tournamentId', params.tournamentId)
-    if (params.afterSeq) queryParams.set('afterSeq', params.afterSeq)
-    
+    if (params.category) queryParams.set('category', params.category)
+    if (params.afterSeq != null && params.afterSeq !== '') {
+      queryParams.set('afterSeq', String(params.afterSeq))
+    }
+
     const queryString = queryParams.toString()
     return `${baseUrl}/live/events${queryString ? `?${queryString}` : ''}`
   },
 }
+
+export { normalizeLiveEvent, normalizeLiveEventsList } from '../utils/liveEventModel'
 
 export default api

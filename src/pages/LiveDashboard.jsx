@@ -1,7 +1,9 @@
-import { useEffect, useCallback, useState, useRef } from 'react'
+/* eslint-disable react-hooks/purity -- countdowns use Date.now() for display */
+import { useEffect, useCallback, useState, useRef, useMemo } from 'react'
 import useLiveStore from '../stores/useLiveStore'
 import useLiveEvents from '../hooks/useLiveEvents'
 import { liveApi } from '../api/client'
+import { isTournamentPlayingState, isTournamentBreakLikeState } from '../utils/tournamentPhases'
 import RoundSection from '../components/live/RoundSection'
 import TeamStatsPanel from '../components/live/TeamStatsPanel'
 import WinnerCelebration from '../components/live/WinnerCelebration'
@@ -27,8 +29,11 @@ function normalizeRound(name) {
 }
 
 const TOURNAMENT_STATE_CONFIG = {
-  IDLE: { title: 'Waiting for Tournament', subtitle: 'Next tournament starts 5 minutes after the previous one', icon: '⏰', phase: 'idle' },
+  IDLE: { title: 'Waiting for Tournament', subtitle: 'Next tournament starts after the previous one completes', icon: '⏰', phase: 'idle' },
   SETUP: { title: 'Tournament Starting', subtitle: 'Teams are being shuffled...', icon: '🎲', phase: 'setup' },
+  ROUND_ACTIVE: { title: 'Live Round', subtitle: 'Matches in progress', icon: '🏟️', phase: 'live' },
+  ROUND_COMPLETE: { title: 'Round Complete', subtitle: 'Advancing winners...', icon: '✅', phase: 'break' },
+  INTER_ROUND_DELAY: { title: 'Next Round Soon', subtitle: 'Brief intermission before the next round', icon: '☕', phase: 'break' },
   ROUND_OF_16: { title: 'Round of 16', subtitle: '16 teams battle for 8 spots', icon: '🏟️', phase: 'Round of 16' },
   QF_BREAK: { title: 'Quarter-Finals Starting', subtitle: 'Brief intermission...', icon: '☕', phase: 'break' },
   QUARTER_FINALS: { title: 'Quarter-Finals', subtitle: '8 teams fight for the semis', icon: '🔥', phase: 'Quarter-finals' },
@@ -37,11 +42,11 @@ const TOURNAMENT_STATE_CONFIG = {
   FINAL_BREAK: { title: 'The Final Awaits', subtitle: 'Who will lift the trophy?', icon: '🏆', phase: 'break' },
   FINAL: { title: 'THE FINAL', subtitle: 'The ultimate showdown', icon: '🏆', phase: 'Final' },
   RESULTS: { title: 'Tournament Complete', subtitle: 'Champion crowned!', icon: '👑', phase: 'complete' },
-  COMPLETE: { title: 'Tournament Complete', subtitle: 'Next tournament in 5 minutes', icon: '🎉', phase: 'complete' },
+  COMPLETE: { title: 'Tournament Complete', subtitle: 'Next tournament soon', icon: '🎉', phase: 'complete' },
 }
 
-// Map state to current round
-const STATE_TO_ROUND = {
+// Map legacy state to current round (when API omits currentRound)
+const LEGACY_STATE_TO_ROUND = {
   ROUND_OF_16: 'Round of 16',
   QF_BREAK: 'Quarter-finals',
   QUARTER_FINALS: 'Quarter-finals',
@@ -61,11 +66,8 @@ export default function LiveDashboard() {
   const [showCelebration, setShowCelebration] = useState(false)
   const [celebrationShown, setCelebrationShown] = useState(false)
 
-  // Auto-cycle state for automatic tournament restart
-  const [autoCyclePhase, setAutoCyclePhase] = useState(null) // null | 'WINNER_DISPLAY' | 'STARTING_TOURNAMENT' | 'FIXTURES_PREVIEW'
-  const [autoCycleCountdown, setAutoCycleCountdown] = useState(0)
-  const autoCyclePhaseStartRef = useRef(null)
-  const autoCycledTournamentIdRef = useRef(null)
+  // Tick to re-render every second so countdown (derived from store start time) updates
+  const [countdownTick, setCountdownTick] = useState(0)
 
   const {
     tournament,
@@ -82,7 +84,22 @@ export default function LiveDashboard() {
     isInitialLoad,
     fetchSnapshot,
     handleEvent,
+    autoCyclePhase,
+    autoCyclePhaseStartTime,
+    autoCycledTournamentId,
+    startAutoCycleWinnerDisplay,
+    setAutoCycleFixturesPreview,
+    setAutoCyclePhaseStartNow,
+    setAutoCycleStartingTournament,
+    clearAutoCycle,
   } = useLiveStore()
+
+  const currentRoundFromStore = useLiveStore((s) => s.getCurrentRound())
+
+  // Countdown derived from persisted start time so it continues across navigation
+  const autoCycleCountdown = autoCyclePhase != null && autoCyclePhaseStartTime != null
+    ? Math.max(0, AUTO_CYCLE_DURATION - (Date.now() - autoCyclePhaseStartTime))
+    : 0
 
   // Handle incoming SSE events
   const onEvent = useCallback((event) => {
@@ -133,7 +150,7 @@ export default function LiveDashboard() {
   // Poll for recent events as fallback for SSE (since SSE might not deliver all events)
   const lastEventSeqRef = useRef(0)
   useEffect(() => {
-    const isLiveRound = ['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(tournament?.state)
+    const isLiveRound = isTournamentPlayingState(tournament?.state)
     if (!isLiveRound) return
 
     const pollRecentEvents = async () => {
@@ -175,8 +192,11 @@ export default function LiveDashboard() {
     prevTournamentStateRef.current = currentState
 
     // Only trigger refresh when entering a new live round (not on initial load)
-    const isNowLive = ['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(currentState)
-    const wasBreak = ['SETUP', 'QF_BREAK', 'SF_BREAK', 'FINAL_BREAK'].includes(prevState)
+    const isNowLive = isTournamentPlayingState(currentState)
+    const wasBreak =
+      isTournamentBreakLikeState(prevState) ||
+      prevState === 'ROUND_COMPLETE' ||
+      prevState === 'INTER_ROUND_DELAY'
 
     // Trigger immediate refresh when transitioning from break/previous round to a new live round
     if (isNowLive && (wasBreak || (prevState && prevState !== currentState))) {
@@ -197,6 +217,13 @@ export default function LiveDashboard() {
     }
   }, [tournament?.winner, tournament?.state, celebrationShown])
 
+  // Re-render every second while countdown is active so displayed time updates
+  useEffect(() => {
+    if (!autoCyclePhase || autoCyclePhase === 'STARTING_TOURNAMENT') return
+    const interval = setInterval(() => setCountdownTick(t => t + 1), 1000)
+    return () => clearInterval(interval)
+  }, [autoCyclePhase])
+
   // ─── Auto-cycle: Detect tournament completion and start winner display ───
   useEffect(() => {
     const state = tournament?.state
@@ -204,56 +231,56 @@ export default function LiveDashboard() {
     if (
       (state === 'RESULTS' || state === 'COMPLETE') &&
       tId &&
-      autoCycledTournamentIdRef.current !== tId &&
+      autoCycledTournamentId !== tId &&
       !autoCyclePhase
     ) {
       console.log('[AutoCycle] Tournament completed, starting winner display')
-      autoCycledTournamentIdRef.current = tId
-      setAutoCyclePhase('WINNER_DISPLAY')
-      autoCyclePhaseStartRef.current = Date.now()
-      setAutoCycleCountdown(AUTO_CYCLE_DURATION)
+      startAutoCycleWinnerDisplay(tId)
     }
-  }, [tournament?.state, tournament?.tournamentId, autoCyclePhase])
+  }, [tournament?.state, tournament?.tournamentId, autoCyclePhase, autoCycledTournamentId, startAutoCycleWinnerDisplay])
 
-  // ─── Auto-cycle: Countdown timer and phase transitions ───
+  // ─── Auto-cycle: Phase transitions when countdown reaches zero ───
+  const runAutoCycleTransition = useCallback(() => {
+    if (autoCyclePhase === 'WINNER_DISPLAY') {
+      console.log('[AutoCycle] Winner display complete, starting new tournament')
+      setAutoCycleStartingTournament()
+      liveApi.startTournament()
+        .then(() => {
+          console.log('[AutoCycle] Tournament started, fetching fixtures')
+          return fetchSnapshot()
+        })
+        .then(() => {
+          setAutoCycleFixturesPreview()
+        })
+        .catch(err => {
+          console.error('[AutoCycle] Failed to start tournament:', err)
+          clearAutoCycle()
+        })
+    } else if (autoCyclePhase === 'FIXTURES_PREVIEW') {
+      console.log('[AutoCycle] Fixtures preview complete, transitioning to live')
+      clearAutoCycle()
+    }
+  }, [autoCyclePhase, fetchSnapshot, setAutoCycleStartingTournament, setAutoCycleFixturesPreview, clearAutoCycle])
+
   useEffect(() => {
-    if (!autoCyclePhase || autoCyclePhase === 'STARTING_TOURNAMENT') return
-    if (!autoCyclePhaseStartRef.current) return
+    if (!autoCyclePhase || autoCyclePhase === 'STARTING_TOURNAMENT' || autoCyclePhaseStartTime == null) return
+
+    const remaining = Math.max(0, AUTO_CYCLE_DURATION - (Date.now() - autoCyclePhaseStartTime))
+    if (remaining <= 0) {
+      runAutoCycleTransition()
+      return
+    }
 
     const interval = setInterval(() => {
-      const elapsed = Date.now() - autoCyclePhaseStartRef.current
-      const remaining = Math.max(0, AUTO_CYCLE_DURATION - elapsed)
-      setAutoCycleCountdown(remaining)
-
-      if (remaining <= 0) {
+      const remainingNow = Math.max(0, AUTO_CYCLE_DURATION - (Date.now() - autoCyclePhaseStartTime))
+      if (remainingNow <= 0) {
         clearInterval(interval)
-
-        if (autoCyclePhase === 'WINNER_DISPLAY') {
-          console.log('[AutoCycle] Winner display complete, starting new tournament')
-          setAutoCyclePhase('STARTING_TOURNAMENT')
-          liveApi.startTournament()
-            .then(() => {
-              console.log('[AutoCycle] Tournament started, fetching fixtures')
-              return fetchSnapshot()
-            })
-            .then(() => {
-              setAutoCyclePhase('FIXTURES_PREVIEW')
-              autoCyclePhaseStartRef.current = Date.now()
-              setAutoCycleCountdown(AUTO_CYCLE_DURATION)
-            })
-            .catch(err => {
-              console.error('[AutoCycle] Failed to start tournament:', err)
-              setAutoCyclePhase(null)
-            })
-        } else if (autoCyclePhase === 'FIXTURES_PREVIEW') {
-          console.log('[AutoCycle] Fixtures preview complete, transitioning to live')
-          setAutoCyclePhase(null)
-        }
+        runAutoCycleTransition()
       }
     }, 1000)
 
     return () => clearInterval(interval)
-  }, [autoCyclePhase, fetchSnapshot])
+  }, [autoCyclePhase, autoCyclePhaseStartTime, runAutoCycleTransition])
 
   // ─── Auto-cycle: Poll for fixtures during preview if none available yet ───
   useEffect(() => {
@@ -274,21 +301,18 @@ export default function LiveDashboard() {
     return () => clearInterval(poll)
   }, [autoCyclePhase, fixtures, fetchSnapshot])
 
-  // ─── Auto-cycle: Reset when new tournament starts playing ───
+  // ─── Auto-cycle: Switch to fixtures preview if backend started new tournament ───
   useEffect(() => {
     if (!autoCyclePhase) return
     const state = tournament?.state
-    // If backend started a new tournament while we're showing winner
     if (autoCyclePhase === 'WINNER_DISPLAY' && state === 'SETUP') {
       const tId = tournament?.tournamentId
-      if (tId && tId !== autoCycledTournamentIdRef.current) {
+      if (tId && tId !== autoCycledTournamentId) {
         console.log('[AutoCycle] Backend started new tournament, switching to fixtures preview')
-        setAutoCyclePhase('FIXTURES_PREVIEW')
-        autoCyclePhaseStartRef.current = Date.now()
-        setAutoCycleCountdown(AUTO_CYCLE_DURATION)
+        setAutoCycleFixturesPreview()
       }
     }
-  }, [tournament?.state, tournament?.tournamentId, autoCyclePhase])
+  }, [tournament?.state, tournament?.tournamentId, autoCyclePhase, autoCycledTournamentId, setAutoCycleFixturesPreview])
 
   // Get state config
   const liveTournament = tournament?.state && tournament.state !== 'IDLE'
@@ -296,7 +320,10 @@ export default function LiveDashboard() {
     : (lastCompletedTournament || tournament)
 
   const stateConfig = TOURNAMENT_STATE_CONFIG[liveTournament?.state] || TOURNAMENT_STATE_CONFIG.IDLE
-  const currentRound = normalizeRound(STATE_TO_ROUND[liveTournament?.state])
+  const currentRound = useMemo(() => {
+    if (currentRoundFromStore) return currentRoundFromStore
+    return normalizeRound(LEGACY_STATE_TO_ROUND[liveTournament?.state])
+  }, [currentRoundFromStore, liveTournament?.state])
 
   // Organize matches by round - use fixtures array if available
   const baseFixtures = fixtures.length > 0 ? fixtures : (liveTournament === lastCompletedTournament ? (lastCompletedFixtures || []) : [])
@@ -435,8 +462,11 @@ export default function LiveDashboard() {
           <GoalTicker
             goalEvents={recentEvents}
             matches={currentRound ? matchesByRound[currentRound] || [] : []}
-            isLive={['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(tournament?.state)}
-            isBreak={['QF_BREAK', 'SF_BREAK', 'FINAL_BREAK', 'SETUP'].includes(tournament?.state)}
+            isLive={isTournamentPlayingState(tournament?.state)}
+            isBreak={
+              isTournamentBreakLikeState(tournament?.state) ||
+              tournament?.state === 'ROUND_COMPLETE'
+            }
             currentRound={currentRound || ''}
             nextRound={stateConfig?.phase === 'break' ? stateConfig?.title?.replace(' Starting', '') : ''}
           />
@@ -523,7 +553,7 @@ export default function LiveDashboard() {
               <span className="text-6xl block mb-4">⏳</span>
               <h3 className="text-xl font-bold text-text mb-2">Waiting for Next Tournament</h3>
               <p className="text-text-muted mb-4">
-                Each round starts 5 minutes after the last. The next tournament begins 5 minutes after the previous one finishes.
+                The next tournament begins after the previous one completes. Live rounds and inter-round timing are driven by the simulation server.
               </p>
             </div>
           )}
@@ -570,9 +600,30 @@ function ConnectionStatus({ connected, connecting, onReconnect }) {
 }
 
 // Tournament Header Component
+/* eslint-disable react-hooks/purity -- inter-round countdown uses Date.now() */
 function TournamentHeader({ tournament, stateConfig, currentRound }) {
-  const isLive = ['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(tournament?.state)
+  const isLive = isTournamentPlayingState(tournament?.state)
   const isComplete = tournament?.state === 'RESULTS' || tournament?.state === 'COMPLETE'
+  const nextRoundStartMs = tournament?.nextRoundStartAt
+    ? new Date(tournament.nextRoundStartAt).getTime()
+    : null
+
+  const [delayTick, setDelayTick] = useState(0)
+  useEffect(() => {
+    if (tournament?.state !== 'INTER_ROUND_DELAY' || !nextRoundStartMs) return
+    const id = setInterval(() => setDelayTick((t) => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [tournament?.state, nextRoundStartMs])
+
+  const delayLabel =
+    tournament?.state === 'INTER_ROUND_DELAY' && nextRoundStartMs
+      ? (() => {
+          const remaining = Math.max(0, nextRoundStartMs - Date.now())
+          return `${Math.floor(remaining / 60000)}:${String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0')}`
+        })()
+      : null
+
+  void delayTick
 
   return (
     <div className={`
@@ -616,9 +667,16 @@ function TournamentHeader({ tournament, stateConfig, currentRound }) {
             )}
           </div>
           <p className="text-text-muted">{stateConfig.subtitle}</p>
+          {tournament?.state === 'INTER_ROUND_DELAY' && delayLabel && (
+            <p className="mt-2 text-sm font-mono text-primary">
+              Next round in {delayLabel}
+            </p>
+          )}
 
           {/* Round Progress Indicator */}
-          {tournament && !['IDLE', 'SETUP', 'RESULTS', 'COMPLETE'].includes(tournament.state) && (
+          {tournament &&
+            !['IDLE', 'SETUP', 'RESULTS', 'COMPLETE'].includes(tournament.state) &&
+            tournament.state !== 'ROUND_COMPLETE' && (
             <div className="mt-4 flex items-center gap-2">
               {ROUNDS.map((round, idx) => {
                 const isPast = ROUNDS.indexOf(currentRound) > idx

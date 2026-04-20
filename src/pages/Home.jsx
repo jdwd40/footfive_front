@@ -5,11 +5,15 @@ import TeamCard from '../components/teams/TeamCard'
 import LoadingSpinner from '../components/common/LoadingSpinner'
 import { SkeletonList } from '../components/common/SkeletonCard'
 import { formatRating } from '../utils/formatters'
+import { isTournamentPlayingState } from '../utils/tournamentPhases'
 
 // Tournament state labels for display
 const TOURNAMENT_STATE_LABELS = {
   IDLE: 'Waiting',
   SETUP: 'Starting',
+  ROUND_ACTIVE: 'Live',
+  ROUND_COMPLETE: 'Round done',
+  INTER_ROUND_DELAY: 'Break',
   ROUND_OF_16: 'Round of 16',
   QF_BREAK: 'QF Starting',
   QUARTER_FINALS: 'Quarter-Finals',
@@ -60,8 +64,7 @@ export default function Home() {
     return () => clearInterval(interval)
   }, [])
 
-  const isLive = liveStatus?.tournament?.state && 
-    ['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(liveStatus.tournament.state)
+  const isLive = isTournamentPlayingState(liveStatus?.tournament?.state)
 
   const isPaused = liveStatus?.simulation?.isPaused === true
   const tournamentIdle = !liveStatus?.tournament?.state || 
@@ -79,7 +82,51 @@ export default function Home() {
       setLiveStatus(statusRes)
     } catch (error) {
       console.error('Failed to start tournament:', error)
-      setStartError(error.response?.data?.message || error.response?.data?.error || error.message || 'Failed to start tournament')
+      
+      // Enhanced error handling with detailed information
+      const status = error.response?.status
+      const responseData = error.response?.data
+      const requestUrl = error.config?.url || error.request?.responseURL || 'Unknown URL'
+      
+      let errorMessage = 'Failed to start tournament'
+      
+      if (status === 404) {
+        errorMessage = 'Tournament start endpoint not found. Please check if the backend is running and the route exists.'
+      } else if (status === 400) {
+        const backendMessage = responseData?.error || responseData?.message
+        if (backendMessage?.includes('Simulation not initialized')) {
+          errorMessage = 'Simulation not initialized. The simulation loop needs to be started first.'
+        } else if (backendMessage?.includes('already in progress')) {
+          errorMessage = 'A tournament is already in progress.'
+        } else {
+          errorMessage = backendMessage || 'Bad request. Please check tournament state.'
+        }
+      } else if (status === 500) {
+        errorMessage = responseData?.error || responseData?.message || 'Server error occurred. Please try again later.'
+      } else if (!error.response) {
+        // Network error (no response received)
+        if (error.code === 'ECONNREFUSED' || error.message?.includes('Network Error')) {
+          errorMessage = 'Cannot connect to server. Please check if the backend is running.'
+        } else {
+          errorMessage = `Network error: ${error.message || 'Unable to reach server'}`
+        }
+      } else {
+        // Other HTTP errors
+        errorMessage = responseData?.error || responseData?.message || error.message || `Error ${status}: Failed to start tournament`
+      }
+      
+      // Log full error details for debugging
+      console.error('[handleStartTournament] Full error details:', {
+        status,
+        statusText: error.response?.statusText,
+        responseData,
+        requestUrl,
+        message: error.message,
+        code: error.code,
+        config: error.config
+      })
+      
+      setStartError(errorMessage)
     } finally {
       setStarting(false)
     }

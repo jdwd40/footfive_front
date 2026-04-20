@@ -1,14 +1,19 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { liveApi } from '../api/client'
 import useLiveStore from '../stores/useLiveStore'
 import useLiveEvents from '../hooks/useLiveEvents'
 import MatchClock from '../components/live/MatchClock'
-import LiveScore from '../components/live/LiveScore'
 import EventFeed from '../components/live/EventFeed'
 import LoadingSpinner from '../components/common/LoadingSpinner'
 import ErrorDisplay from '../components/common/ErrorDisplay'
 import { useToast } from '../components/common/Toast'
+import {
+  dedupeLiveEventsBySeq,
+  sortLiveEventsDesc,
+} from '../utils/liveEventModel'
+
+const SEQ_STORAGE_PREFIX = 'footfive:lastSeq:'
 
 const MATCH_STATE_LABELS = {
   SCHEDULED: 'Scheduled',
@@ -22,118 +27,178 @@ const MATCH_STATE_LABELS = {
   FINISHED: 'Full Time',
 }
 
+function readStoredSeq(fixtureId) {
+  try {
+    const v = sessionStorage.getItem(`${SEQ_STORAGE_PREFIX}${fixtureId}`)
+    const n = parseInt(v, 10)
+    return Number.isFinite(n) ? n : 0
+  } catch {
+    return 0
+  }
+}
+
+function writeStoredSeq(fixtureId, seq) {
+  try {
+    if (seq > 0) sessionStorage.setItem(`${SEQ_STORAGE_PREFIX}${fixtureId}`, String(seq))
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function LiveMatchDetail() {
   const { fixtureId } = useParams()
   const { addToast } = useToast()
-  
+
   const [match, setMatch] = useState(null)
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [bootstrapDone, setBootstrapDone] = useState(false)
+  const [seedAfterSeq, setSeedAfterSeq] = useState(0)
 
-  // Check store for existing match data (handle string/number ID mismatches)
-  const storeMatch = useLiveStore(state => 
-    state.matches.find(m => m.fixtureId == fixtureId || String(m.fixtureId) === String(fixtureId))
+  const storeMatch = useLiveStore((state) =>
+    state.matches.find((m) => m.fixtureId == fixtureId || String(m.fixtureId) === String(fixtureId))
   )
 
-  // SSE event handler for this specific match
-  const onEvent = useCallback((event) => {
-    // Handle string/number ID mismatches
-    if (String(event.fixtureId) !== String(fixtureId)) return
+  const onEvent = useCallback(
+    (event) => {
+      if (event.type === 'connected') return
+      if (String(event.fixtureId) !== String(fixtureId)) return
 
-    // Add event to local events list
-    setEvents(prev => {
-      // Avoid duplicates
-      if (prev.some(e => e.seq === event.seq)) return prev
-      return [...prev, event].sort((a, b) => {
-        if (b.minute !== a.minute) return b.minute - a.minute
-        return (b.seq || 0) - (a.seq || 0)
+      useLiveStore.getState().handleEvent(event)
+
+      setEvents((prev) => {
+        if (event.seq > 0 && prev.some((e) => e.seq === event.seq)) return prev
+        return sortLiveEventsDesc(dedupeLiveEventsBySeq([...prev, event]))
       })
-    })
 
-    // Update match state based on event
-    if (event.type === 'goal') {
-      setMatch(prev => prev ? { ...prev, score: event.score } : prev)
-      addToast(
-        `⚽ GOAL! ${event.displayName || 'Goal scored'}`,
-        'goal',
-        5000
-      )
-    } else if (event.type === 'halftime') {
-      setMatch(prev => prev ? { ...prev, state: 'HALFTIME' } : prev)
-    } else if (event.type === 'second_half_start') {
-      setMatch(prev => prev ? { ...prev, state: 'SECOND_HALF' } : prev)
-    } else if (event.type === 'extra_time_start') {
-      setMatch(prev => prev ? { ...prev, state: 'EXTRA_TIME_1' } : prev)
-      addToast('⚡ Extra Time!', 'info', 5000)
-    } else if (event.type === 'shootout_start') {
-      setMatch(prev => prev ? { ...prev, state: 'PENALTIES' } : prev)
-      addToast('🎯 Penalty Shootout!', 'info', 5000)
-    } else if (event.type === 'fulltime') {
-      // fulltime = end of 90 mins, NOT the end of match in knockout tournaments
-      // Match may continue to extra time if scores are tied
-      addToast('⏱️ Full Time - 90 minutes', 'info', 5000)
-    } else if (event.type === 'match_end' || event.type === 'shootout_end') {
-      // Only mark as finished when match truly ends
-      setMatch(prev => prev ? { ...prev, state: 'FINISHED', isFinished: true } : prev)
-      addToast('🏆 Match Complete!', 'info', 5000)
-    }
-  }, [fixtureId, addToast])
+      if (event.seq > 0) {
+        writeStoredSeq(fixtureId, event.seq)
+        setSeedAfterSeq((s) => Math.max(s, event.seq))
+      }
 
-  // Connect to SSE stream filtered by this fixture
-  const { connected, connecting, reconnect } = useLiveEvents({
-    fixtureId: parseInt(fixtureId),
+      if (event.type === 'goal' || event.type === 'penalty_scored' || event.type === 'shootout_goal') {
+        if (event.score) {
+          setMatch((prev) => (prev ? { ...prev, score: event.score, penaltyScore: event.penaltyScore || prev.penaltyScore } : prev))
+        }
+        addToast(`⚽ ${event.displayName || 'Goal'}`, 'goal', 5000)
+      } else if (event.type === 'halftime') {
+        setMatch((prev) => (prev ? { ...prev, state: 'HALFTIME' } : prev))
+      } else if (event.type === 'second_half_start') {
+        setMatch((prev) => (prev ? { ...prev, state: 'SECOND_HALF' } : prev))
+      } else if (event.type === 'extra_time_start') {
+        setMatch((prev) => (prev ? { ...prev, state: 'EXTRA_TIME_1' } : prev))
+        addToast('⚡ Extra Time!', 'info', 5000)
+      } else if (event.type === 'extra_time_half' || event.type === 'et_halftime') {
+        setMatch((prev) => (prev ? { ...prev, state: 'ET_HALFTIME' } : prev))
+      } else if (event.type === 'extra_time_2_start' || event.type === 'extra_time_end') {
+        setMatch((prev) => (prev ? { ...prev, state: 'EXTRA_TIME_2' } : prev))
+      } else if (event.type === 'shootout_start') {
+        setMatch((prev) => (prev ? { ...prev, state: 'PENALTIES' } : prev))
+        addToast('🎯 Penalty Shootout!', 'info', 5000)
+      } else if (event.type === 'fulltime') {
+        addToast('⏱️ Full Time', 'info', 4000)
+      } else if (event.type === 'match_end' || event.type === 'shootout_end') {
+        setMatch((prev) =>
+          prev ? { ...prev, state: 'FINISHED', isFinished: true, score: event.score || prev.score } : prev
+        )
+        addToast('🏆 Match complete', 'info', 5000)
+      } else if (event.type === 'match_start') {
+        setMatch((prev) =>
+          prev
+            ? { ...prev, state: 'FIRST_HALF', isFinished: false, score: prev.score || { home: 0, away: 0 } }
+            : prev
+        )
+      }
+    },
+    [fixtureId, addToast]
+  )
+
+  const { connected, connecting, error: sseError, reconnect } = useLiveEvents({
+    fixtureId: fixtureId ? parseInt(fixtureId, 10) : null,
+    seedAfterSeq,
     onEvent,
-    enabled: true,
+    enabled: bootstrapDone && !!fixtureId,
   })
 
-  // Fetch match details
   const fetchMatch = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setBootstrapDone(false)
 
     try {
-      // Try to get from live API
-      const data = await liveApi.getMatch(fixtureId)
-      setMatch(data)
+      let data = null
+      try {
+        data = await liveApi.getMatch(fixtureId)
+      } catch {
+        data = null
+      }
 
-      // Also fetch recent events for this match
-      const eventsData = await liveApi.getRecentEvents({ 
-        fixtureId: parseInt(fixtureId),
-        limit: 50 
+      const sm = useLiveStore.getState().matches.find((m) => m.fixtureId == fixtureId || String(m.fixtureId) === String(fixtureId))
+      const fb = useLiveStore.getState().fixtures.find((m) => m.fixtureId == fixtureId || String(m.fixtureId) === String(fixtureId))
+
+      if (!data && sm) {
+        data = sm
+      }
+      if (!data && fb) {
+        data = fb
+      }
+
+      if (data) {
+        setMatch(data)
+      }
+
+      const eventsRes = await liveApi.getRecentEvents({
+        fixtureId: parseInt(fixtureId, 10),
+        limit: 200,
       })
-      
-      if (eventsData.events) {
-        setEvents(eventsData.events.sort((a, b) => {
-          if (b.minute !== a.minute) return b.minute - a.minute
-          return (b.seq || 0) - (a.seq || 0)
-        }))
+
+      const fromApi = eventsRes.events || []
+      const fromStore = useLiveStore.getState().getEventsForMatch(fixtureId)
+      const merged = dedupeLiveEventsBySeq([...fromStore, ...fromApi])
+      const sorted = sortLiveEventsDesc(merged)
+
+      let maxSeq = sorted.reduce((m, e) => Math.max(m, Number(e.seq) || 0), 0)
+      maxSeq = Math.max(maxSeq, readStoredSeq(fixtureId))
+
+      setEvents(sorted)
+      setSeedAfterSeq(maxSeq)
+
+      if (!data) {
+        setError('Failed to load match')
       }
     } catch (err) {
-      // Fall back to store match if API fails
-      if (storeMatch) {
-        setMatch(storeMatch)
+      const fallback = useLiveStore.getState().matches.find((m) => m.fixtureId == fixtureId || String(m.fixtureId) === String(fixtureId))
+      if (fallback) {
+        setMatch(fallback)
       } else {
         setError(err.message || 'Failed to load match')
       }
     } finally {
       setLoading(false)
+      setBootstrapDone(true)
     }
-  }, [fixtureId, storeMatch])
+  }, [fixtureId])
 
-  // Initial fetch
   useEffect(() => {
     fetchMatch()
   }, [fetchMatch])
 
-  // Update from store if available
   useEffect(() => {
     if (storeMatch && !match) {
       setMatch(storeMatch)
     }
   }, [storeMatch, match])
 
-  const isLive = match && ['FIRST_HALF', 'SECOND_HALF', 'EXTRA_TIME_1', 'EXTRA_TIME_2', 'PENALTIES'].includes(match.state)
+  const isLive = useMemo(() => {
+    if (!match) return false
+    return (
+      ['FIRST_HALF', 'SECOND_HALF', 'EXTRA_TIME_1', 'EXTRA_TIME_2', 'PENALTIES', 'HALFTIME', 'ET_HALFTIME'].includes(
+        match.state
+      ) && !match.isFinished
+    )
+  }, [match])
+
   const stateLabel = match?.state ? MATCH_STATE_LABELS[match.state] : 'Loading...'
 
   if (loading && !match) {
@@ -162,9 +227,8 @@ export default function LiveMatchDetail() {
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <Link 
+        <Link
           to="/live"
           className="inline-flex items-center gap-2 text-text-muted hover:text-primary transition-colors"
         >
@@ -173,63 +237,64 @@ export default function LiveMatchDetail() {
           </svg>
           Live Dashboard
         </Link>
-        
-        <ConnectionIndicator 
-          connected={connected} 
+
+        <ConnectionIndicator
+          connected={connected}
           connecting={connecting}
+          sseError={sseError}
           onReconnect={() => reconnect(true)}
         />
       </div>
 
-      {/* Match Card */}
-      <div className={`
+      <div
+        className={`
         rounded-2xl bg-card border p-6 mb-6
         ${isLive ? 'border-primary/50 shadow-xl shadow-primary/20' : 'border-border'}
-      `}>
-        {/* Status Badge */}
+      `}
+      >
         <div className="flex items-center justify-center mb-4">
-          <span className={`
+          <span
+            className={`
             inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-sm font-semibold
-            ${isLive 
-              ? 'bg-primary/20 text-primary' 
-              : match?.state === 'FINISHED' 
-                ? 'bg-slate-500/20 text-slate-400'
-                : 'bg-amber-500/20 text-amber-400'}
-          `}>
+            ${
+              isLive
+                ? 'bg-primary/20 text-primary'
+                : match?.state === 'FINISHED'
+                  ? 'bg-slate-500/20 text-slate-400'
+                  : 'bg-amber-500/20 text-amber-400'
+            }
+          `}
+          >
             {isLive && <span className="w-2 h-2 rounded-full bg-current animate-pulse" />}
             {match?.minute !== undefined && isLive ? `${match.minute}' - ${stateLabel}` : stateLabel}
           </span>
         </div>
 
-        {/* Teams and Score */}
+        <div className="mb-6">
+          <MatchClock events={events} isLive={isLive} matchMinute={match?.minute} />
+        </div>
+
         <div className="flex items-center justify-between gap-4">
-          {/* Home Team */}
           <div className="flex-1 text-center">
             <div className="w-20 h-20 mx-auto mb-3 rounded-2xl bg-gradient-to-br from-primary/30 to-primary/10 flex items-center justify-center text-4xl shadow-lg">
               ⚽
             </div>
-            <h2 className={`text-lg font-bold truncate px-2 ${
-              match?.score?.home > match?.score?.away ? 'text-primary' : 'text-text'
-            }`}>
+            <h2
+              className={`text-lg font-bold truncate px-2 ${
+                match?.score?.home > match?.score?.away ? 'text-primary' : 'text-text'
+              }`}
+            >
               {match?.homeTeam?.name || 'Home Team'}
             </h2>
           </div>
 
-          {/* Score */}
           <div className="text-center px-4">
             <div className="flex items-center gap-4">
-              <ScoreDigit 
-                value={match?.score?.home ?? 0} 
-                isWinning={match?.score?.home > match?.score?.away}
-              />
+              <ScoreDigit value={match?.score?.home ?? 0} isWinning={match?.score?.home > match?.score?.away} />
               <span className="text-3xl text-text-muted">-</span>
-              <ScoreDigit 
-                value={match?.score?.away ?? 0}
-                isWinning={match?.score?.away > match?.score?.home}
-              />
+              <ScoreDigit value={match?.score?.away ?? 0} isWinning={match?.score?.away > match?.score?.home} />
             </div>
-            
-            {/* Penalty Score */}
+
             {(match?.penaltyScore?.home > 0 || match?.penaltyScore?.away > 0) && (
               <p className="text-sm text-text-muted mt-2">
                 ({match.penaltyScore.home} - {match.penaltyScore.away} pens)
@@ -237,55 +302,38 @@ export default function LiveMatchDetail() {
             )}
           </div>
 
-          {/* Away Team */}
           <div className="flex-1 text-center">
             <div className="w-20 h-20 mx-auto mb-3 rounded-2xl bg-gradient-to-br from-blue-500/30 to-blue-500/10 flex items-center justify-center text-4xl shadow-lg">
               ⚽
             </div>
-            <h2 className={`text-lg font-bold truncate px-2 ${
-              match?.score?.away > match?.score?.home ? 'text-primary' : 'text-text'
-            }`}>
+            <h2
+              className={`text-lg font-bold truncate px-2 ${
+                match?.score?.away > match?.score?.home ? 'text-primary' : 'text-text'
+              }`}
+            >
               {match?.awayTeam?.name || 'Away Team'}
             </h2>
           </div>
         </div>
 
-        {/* Match Stats */}
         {match?.stats && (
           <div className="mt-6 pt-6 border-t border-border">
             <h3 className="text-sm font-semibold text-text-muted text-center mb-4">Match Stats</h3>
             <div className="grid grid-cols-3 gap-4 text-sm">
-              <StatRow 
-                label="Shots"
-                home={match.stats.home?.shots}
-                away={match.stats.away?.shots}
-              />
-              <StatRow 
+              <StatRow label="Shots" home={match.stats.home?.shots} away={match.stats.away?.shots} />
+              <StatRow
                 label="On Target"
                 home={match.stats.home?.shotsOnTarget}
                 away={match.stats.away?.shotsOnTarget}
               />
-              <StatRow 
-                label="Corners"
-                home={match.stats.home?.corners}
-                away={match.stats.away?.corners}
-              />
-              <StatRow 
-                label="Fouls"
-                home={match.stats.home?.fouls}
-                away={match.stats.away?.fouls}
-              />
-              <StatRow 
-                label="xG"
-                home={match.stats.home?.xg?.toFixed(2)}
-                away={match.stats.away?.xg?.toFixed(2)}
-              />
+              <StatRow label="Corners" home={match.stats.home?.corners} away={match.stats.away?.corners} />
+              <StatRow label="Fouls" home={match.stats.home?.fouls} away={match.stats.away?.fouls} />
+              <StatRow label="xG" home={match.stats.home?.xg?.toFixed(2)} away={match.stats.away?.xg?.toFixed(2)} />
             </div>
           </div>
         )}
       </div>
 
-      {/* Events Feed */}
       <div className="card">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-bold text-text">Match Events</h3>
@@ -296,24 +344,18 @@ export default function LiveMatchDetail() {
             </span>
           )}
         </div>
-        
-        {events.length > 0 ? (
-          <LiveEventsList events={events} match={match} />
-        ) : (
-          <div className="text-center py-12 text-text-muted">
-            <span className="text-3xl block mb-2">⏳</span>
-            <p>Waiting for events...</p>
-          </div>
-        )}
+
+        <EventFeed
+          events={events}
+          homeTeam={match?.homeTeam}
+          awayTeam={match?.awayTeam}
+          autoScroll={isLive}
+        />
       </div>
 
-      {/* Back Link */}
       {match?.state === 'FINISHED' && (
         <div className="mt-6 text-center">
-          <Link 
-            to="/live" 
-            className="text-primary hover:underline"
-          >
+          <Link to="/live" className="text-primary hover:underline">
             ← Back to Live Dashboard
           </Link>
         </div>
@@ -322,12 +364,15 @@ export default function LiveMatchDetail() {
   )
 }
 
-function ConnectionIndicator({ connected, connecting, onReconnect }) {
+function ConnectionIndicator({ connected, connecting, sseError, onReconnect }) {
   if (connected) {
     return (
-      <div className="flex items-center gap-2 text-sm text-emerald-400">
-        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-        Live
+      <div className="flex flex-col items-end gap-1">
+        <div className="flex items-center gap-2 text-sm text-emerald-400">
+          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          Live
+        </div>
+        {sseError && <span className="text-xs text-amber-400 max-w-[200px] text-right">{sseError}</span>}
       </div>
     )
   }
@@ -342,23 +387,29 @@ function ConnectionIndicator({ connected, connecting, onReconnect }) {
   }
 
   return (
-    <button 
+    <button
+      type="button"
       onClick={onReconnect}
-      className="flex items-center gap-2 text-sm text-red-400 hover:text-red-300"
+      className="flex flex-col items-end gap-1 text-sm text-red-400 hover:text-red-300"
     >
-      <span className="w-2 h-2 rounded-full bg-red-500" />
-      Reconnect
+      <span className="flex items-center gap-2">
+        <span className="w-2 h-2 rounded-full bg-red-500" />
+        Reconnect
+      </span>
+      {sseError && <span className="text-xs max-w-[220px] text-right">{sseError}</span>}
     </button>
   )
 }
 
 function ScoreDigit({ value, isWinning }) {
   return (
-    <div className={`
+    <div
+      className={`
       w-16 h-20 rounded-xl flex items-center justify-center
       text-5xl font-bold transition-all duration-300
       ${isWinning ? 'bg-primary/20 text-primary shadow-lg shadow-primary/25' : 'bg-card-hover text-text'}
-    `}>
+    `}
+    >
       {value}
     </div>
   )
@@ -373,96 +424,3 @@ function StatRow({ label, home, away }) {
     </>
   )
 }
-
-function LiveEventsList({ events, match }) {
-  const eventIcons = {
-    goal: '⚽',
-    match_start: '🏁',
-    halftime: '⏸️',
-    second_half_start: '▶️',
-    fulltime: '🏆',
-    match_end: '🏆',
-    penalty_scored: '⚽',
-    penalty_missed: '❌',
-    penalty_saved: '🧤',
-    shootout_start: '🎯',
-    shootout_goal: '⚽',
-    shootout_miss: '❌',
-    shootout_save: '🧤',
-    extra_time_start: '⏱️',
-  }
-
-  const eventLabels = {
-    goal: 'GOAL!',
-    match_start: 'Kick Off',
-    halftime: 'Half Time',
-    second_half_start: 'Second Half',
-    fulltime: 'Full Time',
-    match_end: 'Match Over',
-    penalty_scored: 'Penalty Scored',
-    penalty_missed: 'Penalty Missed',
-    penalty_saved: 'Penalty Saved',
-    shootout_start: 'Shootout Begins',
-    shootout_goal: 'Shootout Goal',
-    shootout_miss: 'Shootout Miss',
-    shootout_save: 'Shootout Save',
-    extra_time_start: 'Extra Time',
-  }
-
-  return (
-    <div className="space-y-2 max-h-96 overflow-y-auto">
-      {events.map((event, idx) => {
-        const isGoal = event.type === 'goal' || event.type === 'penalty_scored' || event.type === 'shootout_goal'
-        const isHomeTeam = event.teamId === match?.homeTeam?.id
-
-        return (
-          <div 
-            key={event.seq || idx}
-            className={`
-              flex items-center gap-3 p-3 rounded-xl transition-all
-              ${isGoal 
-                ? 'bg-primary/15 border border-primary/40' 
-                : 'bg-card-hover'}
-            `}
-          >
-            {/* Time */}
-            <div className="min-w-[45px] text-center">
-              <span className={`text-sm font-mono font-bold ${isGoal ? 'text-primary' : 'text-text-muted'}`}>
-                {event.minute !== undefined ? `${event.minute}'` : '--'}
-              </span>
-            </div>
-
-            {/* Icon */}
-            <div className={`
-              w-9 h-9 rounded-full flex items-center justify-center text-lg
-              ${isGoal ? 'bg-primary/30' : 'bg-card'}
-            `}>
-              {eventIcons[event.type] || '📌'}
-            </div>
-
-            {/* Details */}
-            <div className="flex-1 min-w-0">
-              <p className={`font-semibold ${isGoal ? 'text-primary' : 'text-text'}`}>
-                {eventLabels[event.type] || event.type}
-              </p>
-              {event.displayName && (
-                <p className="text-sm text-text-muted">{event.displayName}</p>
-              )}
-              {event.assistName && (
-                <p className="text-xs text-text-muted">Assist: {event.assistName}</p>
-              )}
-            </div>
-
-            {/* Score after event */}
-            {event.score && (
-              <div className="text-sm text-text-muted">
-                {event.score.home} - {event.score.away}
-              </div>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-

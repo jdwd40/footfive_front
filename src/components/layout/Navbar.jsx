@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, NavLink } from 'react-router-dom'
 import { liveApi } from '../../api/client'
+import { isTournamentPlayingState } from '../../utils/tournamentPhases'
 
 const navLinks = [
   { to: '/', label: 'Home', icon: '🏠' },
@@ -18,8 +19,7 @@ export default function Navbar() {
     const checkLiveStatus = async () => {
       try {
         const status = await liveApi.getStatus()
-        const liveStates = ['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL']
-        setIsLive(liveStates.includes(status?.tournament?.state))
+        setIsLive(isTournamentPlayingState(status?.tournament?.state))
       } catch (e) {}
     }
     

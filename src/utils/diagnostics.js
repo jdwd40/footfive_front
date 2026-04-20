@@ -102,7 +102,9 @@ export async function checkLiveStatus() {
       tournament: data.tournament,
       simulation: data.simulation,
       hasActiveMatches: data.tournament?.state && 
-        ['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(data.tournament.state),
+        ['ROUND_ACTIVE', 'ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(
+          data.tournament.state
+        ),
       error: null
     }
   } catch (error) {

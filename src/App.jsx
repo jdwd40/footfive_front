@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import Layout from './components/layout/Layout'
 import { ToastProvider } from './components/common/Toast'
 
@@ -29,6 +29,7 @@ export default function App() {
             
             {/* Fixtures & History */}
             <Route path="/fixtures" element={<FixtureList />} />
+            <Route path="/fixtures/:id/live" element={<FixtureLiveRedirect />} />
             <Route path="/fixtures/:id" element={<FixtureDetail />} />
             
             {/* Teams */}
@@ -45,6 +46,11 @@ export default function App() {
       </ToastProvider>
     </BrowserRouter>
   )
+}
+
+function FixtureLiveRedirect() {
+  const { id } = useParams()
+  return <Navigate to={`/live/${id}`} replace />
 }
 
 function NotFound() {

@@ -74,6 +74,12 @@ export const shortenTeamName = (name, maxLength = 12) => {
 // Event type icons
 export const eventIcons = {
   goal: '⚽',
+  penalty_scored: '⚽',
+  match_start: '🏁',
+  match_end: '🏆',
+  second_half_start: '▶️',
+  extra_time_half: '⏸️',
+  extra_time_end: '⏱️',
   shot_saved: '🧤',
   shot_missed: '❌',
   yellow_card: '🟨',

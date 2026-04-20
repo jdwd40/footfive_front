@@ -4,6 +4,7 @@ import useLiveStore from '../stores/useLiveStore'
 import useLiveEvents from '../hooks/useLiveEvents'
 import LoadingSpinner from '../components/common/LoadingSpinner'
 import { useToast } from '../components/common/Toast'
+import { isTournamentPlayingState, isTournamentBreakLikeState } from '../utils/tournamentPhases'
 
 const ROUNDS_ORDER = ['Round of 16', 'Quarter-finals', 'Semi-finals', 'Final']
 
@@ -122,14 +123,20 @@ export default function FixtureList() {
     })
   }, [tournament, fixtures, lastCompletedFixtures, matches, completedMatches, allMatches.length, upcomingFixtures, isWaitingState])
   
-  // Get current round from actual tournament state (not display tournament)
-  const currentRound = normalizeRound(TOURNAMENT_STATE_TO_ROUND[tournament?.state])
-  const isRoundActive = ['ROUND_OF_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'FINAL'].includes(tournament?.state)
-  const isBreak = tournament?.state?.includes('BREAK') || tournament?.state === 'SETUP'
-  
-  // Determine next round - now works for both active rounds AND breaks
-  // This allows showing upcoming fixtures even while current round is being played
-  const nextRound = normalizeRound(getNextRound(tournament?.state))
+  const currentRoundFromApi = normalizeRound(
+    tournament?.currentRound ?? tournament?.currentRoundName ?? tournament?.currentRoundKey
+  )
+  const currentRound =
+    currentRoundFromApi || normalizeRound(TOURNAMENT_STATE_TO_ROUND[tournament?.state])
+  const isRoundActive = isTournamentPlayingState(tournament?.state)
+  const isBreak =
+    isTournamentBreakLikeState(tournament?.state) ||
+    tournament?.state === 'ROUND_COMPLETE' ||
+    tournament?.state?.includes('BREAK')
+
+  const nextRound = normalizeRound(
+    getNextRound(tournament?.state, tournament?.currentRound ?? tournament?.currentRoundName)
+  )
 
   // Group matches by round
   const matchesByRound = ROUNDS_ORDER.reduce((acc, round) => {
@@ -644,10 +651,19 @@ function UpcomingMatchCard({ match }) {
 }
 
 // Helper Functions
-function getNextRound(state) {
-  // Map both active rounds and break states to the next round
+function getNextRound(state, currentRoundName) {
+  const fromApi = normalizeRound(
+    typeof currentRoundName === 'object' ? currentRoundName?.name : currentRoundName
+  )
+  if (fromApi) {
+    const idx = ROUNDS_ORDER.indexOf(fromApi)
+    if (idx >= 0 && idx < ROUNDS_ORDER.length - 1) return ROUNDS_ORDER[idx + 1]
+  }
   const map = {
     SETUP: 'Round of 16',
+    ROUND_ACTIVE: null,
+    ROUND_COMPLETE: null,
+    INTER_ROUND_DELAY: null,
     ROUND_OF_16: 'Quarter-finals',
     QF_BREAK: 'Quarter-finals',
     QUARTER_FINALS: 'Semi-finals',
@@ -672,6 +688,9 @@ function formatTournamentState(state) {
   const labels = {
     IDLE: 'Waiting',
     SETUP: 'Starting Soon',
+    ROUND_ACTIVE: 'Live round',
+    ROUND_COMPLETE: 'Round complete',
+    INTER_ROUND_DELAY: 'Inter-round break',
     ROUND_OF_16: 'Round of 16',
     QF_BREAK: 'QF Starting',
     QUARTER_FINALS: 'Quarter-Finals',
