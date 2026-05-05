@@ -14,6 +14,7 @@ import {
 } from '../utils/liveEventModel'
 
 const SEQ_STORAGE_PREFIX = 'footfive:lastSeq:'
+const LIVE_MATCH_POLL_MS = 2000
 
 const MATCH_STATE_LABELS = {
   SCHEDULED: 'Scheduled',
@@ -25,6 +26,23 @@ const MATCH_STATE_LABELS = {
   EXTRA_TIME_2: 'Extra Time 2nd',
   PENALTIES: 'Penalty Shootout',
   FINISHED: 'Full Time',
+}
+
+function applyLiveEventToMatch(match, event) {
+  if (!match) return match
+
+  const updates = {}
+  if (event.minute != null) updates.minute = event.minute
+  if (event.second != null) updates.second = event.second
+  if (event.score) updates.score = event.score
+  if (event.penaltyScore) updates.penaltyScore = event.penaltyScore
+
+  return Object.keys(updates).length > 0 ? { ...match, ...updates } : match
+}
+
+function applyMatchSnapshot(match, snapshot) {
+  if (!snapshot) return match
+  return match ? { ...match, ...snapshot } : snapshot
 }
 
 function readStoredSeq(fixtureId) {
@@ -67,6 +85,8 @@ export default function LiveMatchDetail() {
 
       useLiveStore.getState().handleEvent(event)
 
+      setMatch((prev) => applyLiveEventToMatch(prev, event))
+
       setEvents((prev) => {
         if (event.seq > 0 && prev.some((e) => e.seq === event.seq)) return prev
         return sortLiveEventsDesc(dedupeLiveEventsBySeq([...prev, event]))
@@ -78,9 +98,6 @@ export default function LiveMatchDetail() {
       }
 
       if (event.type === 'goal' || event.type === 'penalty_scored' || event.type === 'shootout_goal') {
-        if (event.score) {
-          setMatch((prev) => (prev ? { ...prev, score: event.score, penaltyScore: event.penaltyScore || prev.penaltyScore } : prev))
-        }
         addToast(`⚽ ${event.displayName || 'Goal'}`, 'goal', 5000)
       } else if (event.type === 'halftime') {
         setMatch((prev) => (prev ? { ...prev, state: 'HALFTIME' } : prev))
@@ -189,6 +206,39 @@ export default function LiveMatchDetail() {
       setMatch(storeMatch)
     }
   }, [storeMatch, match])
+
+  const shouldPollMatch =
+    bootstrapDone &&
+    !!fixtureId &&
+    !!match &&
+    match.state !== 'FINISHED' &&
+    match.isFinished !== true
+
+  useEffect(() => {
+    if (!shouldPollMatch) return
+
+    let cancelled = false
+
+    const pollMatch = async () => {
+      try {
+        const data = await liveApi.getMatch(fixtureId)
+        if (cancelled || !data) return
+
+        setMatch((prev) => applyMatchSnapshot(prev, data))
+        useLiveStore.getState().updateMatch(fixtureId, data)
+      } catch (err) {
+        console.error('[LiveMatchDetail] Failed to poll match:', err)
+      }
+    }
+
+    pollMatch()
+    const interval = setInterval(pollMatch, LIVE_MATCH_POLL_MS)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [fixtureId, shouldPollMatch])
 
   const isLive = useMemo(() => {
     if (!match) return false

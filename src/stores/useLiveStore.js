@@ -417,7 +417,7 @@ export const useLiveStore = create((set, get) => ({
   // Handle incoming SSE event
   handleEvent: (event) => {
     const normalized = normalizeLiveEvent(event) || event
-    const { type, fixtureId, score, penaltyScore } = normalized
+    const { type, fixtureId, score, penaltyScore, minute, second } = normalized
 
     set((state) => {
       let matchEventsByFixtureId = state.matchEventsByFixtureId
@@ -439,6 +439,28 @@ export const useLiveStore = create((set, get) => ({
       if (!m?.fixtureId || !targetId) return false
       // Use loose equality to handle string/number mismatches
       return m.fixtureId == targetId || String(m.fixtureId) === String(targetId)
+    }
+
+    if (fixtureId) {
+      const liveUpdates = {}
+      if (minute != null) liveUpdates.minute = minute
+      if (second != null) liveUpdates.second = second
+      if (score) liveUpdates.score = score
+      if (penaltyScore) liveUpdates.penaltyScore = penaltyScore
+
+      if (Object.keys(liveUpdates).length > 0) {
+        set(state => ({
+          fixtures: state.fixtures.map(m =>
+            matchesFixtureId(m, fixtureId) ? { ...m, ...liveUpdates } : m
+          ),
+          matches: state.matches.map(m =>
+            matchesFixtureId(m, fixtureId) ? { ...m, ...liveUpdates } : m
+          ),
+          completedMatches: state.completedMatches.map(m =>
+            matchesFixtureId(m, fixtureId) ? { ...m, ...liveUpdates } : m
+          ),
+        }))
+      }
     }
 
     // Handle specific event types
@@ -833,4 +855,3 @@ export const useLiveStore = create((set, get) => ({
 }))
 
 export default useLiveStore
-

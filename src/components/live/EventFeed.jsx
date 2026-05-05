@@ -34,7 +34,7 @@ export default function EventFeed({
 
   useEffect(() => {
     if (autoScroll && feedRef.current) {
-      feedRef.current.scrollTop = feedRef.current.scrollHeight
+      feedRef.current.scrollTop = 0
     }
   }, [sortedEvents, autoScroll])
 
