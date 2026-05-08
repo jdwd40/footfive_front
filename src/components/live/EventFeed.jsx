@@ -1,6 +1,6 @@
 import { useRef, useEffect, useMemo } from 'react'
 import { getEventIcon, formatMatchTime } from '../../utils/formatters'
-import { compareLiveEventsDesc } from '../../utils/liveEventModel'
+import { compareLiveEventsDesc, resolveEventTeam } from '../../utils/liveEventModel'
 
 /** Resolve event kind for display (unified `type` or legacy `event_type`). */
 function eventKind(event) {
@@ -15,6 +15,9 @@ export default function EventFeed({
   /** 'home' | 'away' names or team objects with .name */
   homeTeamName: homeTeamNameProp,
   awayTeamName: awayTeamNameProp,
+  /** Optional ids for callers that pass team name + id separately */
+  homeTeamId,
+  awayTeamId,
 }) {
   const feedRef = useRef(null)
 
@@ -26,6 +29,24 @@ export default function EventFeed({
     awayTeamNameProp ||
     (typeof awayTeam === 'string' ? awayTeam : awayTeam?.name) ||
     ''
+
+  const homeId =
+    homeTeamId ?? (typeof homeTeam === 'object' ? homeTeam?.id : undefined) ?? null
+  const awayId =
+    awayTeamId ?? (typeof awayTeam === 'object' ? awayTeam?.id : undefined) ?? null
+
+  const homeTeamObj =
+    typeof homeTeam === 'object' && homeTeam !== null
+      ? { ...homeTeam, id: homeTeam.id ?? homeId }
+      : homeName
+        ? { name: homeName, id: homeId }
+        : null
+  const awayTeamObj =
+    typeof awayTeam === 'object' && awayTeam !== null
+      ? { ...awayTeam, id: awayTeam.id ?? awayId }
+      : awayName
+        ? { name: awayName, id: awayId }
+        : null
 
   const sortedEvents = useMemo(() => {
     if (!events || events.length === 0) return []
@@ -58,8 +79,8 @@ export default function EventFeed({
         <EventItem
           key={event.seq > 0 ? `seq-${event.seq}` : `idx-${index}-${eventKind(event)}`}
           event={event}
-          homeTeamName={homeName}
-          awayTeamName={awayName}
+          homeTeam={homeTeamObj}
+          awayTeam={awayTeamObj}
           isLatest={index === 0}
         />
       ))}
@@ -67,26 +88,22 @@ export default function EventFeed({
   )
 }
 
-function EventItem({ event, homeTeamName, isLatest }) {
+function EventItem({ event, homeTeam, awayTeam, isLatest }) {
   const kind = eventKind(event)
-  const teamLabel = event.teamName || event.team_name
-  const isHomeTeam = teamLabel && homeTeamName && teamLabel === homeTeamName
-  const isNeutral =
-    !teamLabel ||
-    [
-      'match_start',
-      'kickoff',
-      'halftime',
-      'second_half_start',
-      'fulltime',
-      'extra_time_start',
-      'extra_time_half',
-      'extra_time_end',
-      'shootout_start',
-      'shootout_end',
-      'match_end',
-      'connected',
-    ].includes(kind)
+  const { team: resolvedTeam, side } = resolveEventTeam(event, { homeTeam, awayTeam })
+  const teamLabel = resolvedTeam?.name || null
+  const isHomeTeam = side === 'home'
+  const isMatchStateEvent = NEUTRAL_EVENT_TEMPLATES[kind] != null
+  const isNeutral = !teamLabel || isMatchStateEvent
+
+  const playerName =
+    event.displayName || event.player_name || event.player?.name || null
+  const assistName =
+    event.assistName || event.assist_name || event.assist?.name || null
+  const description = sanitizeEventDescription(event.description, {
+    teamName: teamLabel,
+    playerName,
+  })
 
   const isGoal =
     kind === 'goal' ||
@@ -142,23 +159,28 @@ function EventItem({ event, homeTeamName, isLatest }) {
 
       <div className="flex-1 min-w-0">
         <p className={`font-semibold ${isGoal ? 'text-primary text-lg' : 'text-text'}`}>
-          {formatEventLabel(kind)}
+          {(() => {
+            const { pre, team, post } = formatEventHeadline(kind, teamLabel)
+            const teamColor = isHomeTeam ? 'text-primary' : 'text-blue-400'
+            return (
+              <>
+                {pre}
+                {team && (
+                  <span className={teamColor}>{team}</span>
+                )}
+                {post}
+              </>
+            )
+          })()}
         </p>
-        {event.description && (
-          <p className="text-sm text-text-muted line-clamp-2">{event.description}</p>
+        {description && (
+          <p className="text-sm text-text-muted line-clamp-2">{description}</p>
         )}
-        {(event.displayName || event.player_name) && (
-          <p className="text-sm text-text-muted truncate">
-            {event.displayName || event.player_name}
-          </p>
+        {playerName && (
+          <p className="text-sm text-text-muted truncate">{playerName}</p>
         )}
-        {(event.assistName || event.assist_name) && (
-          <p className="text-xs text-text-muted">
-            Assist: {event.assistName || event.assist_name}
-          </p>
-        )}
-        {teamLabel && !isNeutral && (
-          <p className={`text-xs ${isHomeTeam ? 'text-primary' : 'text-blue-400'}`}>{teamLabel}</p>
+        {assistName && (
+          <p className="text-xs text-text-muted">Assist: {assistName}</p>
         )}
         {event.shootoutScore && (
           <p className="text-xs text-text-muted mt-1">
@@ -178,37 +200,110 @@ function EventItem({ event, homeTeamName, isLatest }) {
   )
 }
 
-function formatEventLabel(type) {
-  const labels = {
-    goal: 'GOAL!!!',
-    penalty_scored: 'Penalty Scored',
-    penalty_goal: 'PENALTY SCORED!',
-    shot_saved: 'Shot Saved',
-    shot_missed: 'Shot Off Target',
-    yellow_card: 'Yellow Card',
-    red_card: 'RED CARD!',
-    foul: 'Foul',
-    corner: 'Corner Kick',
-    penalty_awarded: 'PENALTY!',
-    penalty_saved: 'Penalty Saved',
-    penalty_missed: 'Penalty Missed',
-    kickoff: 'Kick Off',
-    match_start: 'Kick Off',
-    halftime: 'Half Time',
-    second_half_start: 'Second Half',
-    fulltime: 'Full Time (90)',
-    extra_time_start: 'Extra Time',
-    extra_time_half: 'ET Half Time',
-    extra_time_end: 'Extra Time End',
-    shootout_start: 'Shootout Begins',
-    shootout_goal: 'Shootout Goal',
-    shootout_miss: 'Shootout Miss',
-    shootout_save: 'Shootout Save',
-    shootout_end: 'Shootout Over',
-    match_end: 'Match Over',
-    substitution: 'Substitution',
-    offside: 'Offside',
-    var_check: 'VAR Review',
+function sanitizeEventDescription(description, { teamName, playerName } = {}) {
+  if (!description) return null
+  let cleaned = description
+  if (teamName) {
+    cleaned = cleaned.replace(/Unknown Team/gi, teamName)
   }
-  return labels[type] || type?.replace(/_/g, ' ') || 'Event'
+  if (playerName) {
+    cleaned = cleaned.replace(/Unknown Player/gi, playerName)
+  }
+  return cleaned
+}
+
+// Match-state events that aren't tied to one team.
+const NEUTRAL_EVENT_TEMPLATES = {
+  match_start: 'Kick Off',
+  kickoff: 'Kick Off',
+  halftime: 'Half Time',
+  second_half_start: 'Second Half',
+  fulltime: 'Full Time (90)',
+  extra_time_start: 'Extra Time',
+  extra_time_half: 'ET Half Time',
+  extra_time_end: 'Extra Time End',
+  shootout_start: 'Shootout Begins',
+  shootout_end: 'Shootout Over',
+  match_end: 'Match Over',
+  connected: 'Connected',
+  var_check: 'VAR Review',
+}
+
+// Team-affiliated events. `{team}` is replaced with the resolved team name.
+const TEAM_EVENT_TEMPLATES = {
+  goal: '{team} GOAL!!!',
+  penalty_scored: '{team} score from the spot',
+  penalty_goal: '{team} score from the spot',
+  shootout_goal: '{team} score in the shootout',
+  shootout_miss: '{team} miss in the shootout',
+  shootout_save: '{team}’s penalty saved',
+  shot: '{team} take a shot',
+  shot_attempt: '{team} take a shot',
+  shot_saved: '{team}’s shot saved',
+  shot_missed: '{team}’s shot off target',
+  shot_off: '{team}’s shot off target',
+  shot_blocked: '{team}’s shot blocked',
+  attack: '{team} push forward',
+  attacking_play: '{team} push forward',
+  attack_phase: '{team} push forward',
+  counter_attack: '{team} break on the counter',
+  build_up: '{team} build up play',
+  build_up_play: '{team} build up play',
+  buildup: '{team} build up play',
+  possession: '{team} have possession',
+  possession_play: '{team} have possession',
+  ball_progression: '{team} push the ball forward',
+  ball_progress: '{team} push the ball forward',
+  progression: '{team} push the ball forward',
+  chance_created: 'Chance for {team}!',
+  big_chance: 'Big chance for {team}!',
+  defensive_play: '{team} defending',
+  defending: '{team} defending',
+  pressing: '{team} press high',
+  tackle: 'Tackle by {team}',
+  interception: '{team} intercept',
+  header: '{team} header',
+  corner: 'Corner kick to {team}',
+  corner_kick: 'Corner kick to {team}',
+  free_kick: 'Free kick to {team}',
+  throw_in: 'Throw-in to {team}',
+  foul: 'Foul by {team}',
+  yellow_card: 'Yellow card — {team}',
+  red_card: 'RED CARD — {team}',
+  offside: 'Offside against {team}',
+  substitution: '{team} substitution',
+  penalty_awarded: 'PENALTY to {team}!',
+  penalty_saved: '{team}’s penalty saved',
+  penalty_missed: '{team}’s penalty missed',
+  injury: 'Injury — {team}',
+}
+
+/**
+ * Build a headline for an event row.
+ * Returns { pre, team, post } so the caller can colour the team token.
+ */
+function formatEventHeadline(kind, teamLabel) {
+  const neutral = NEUTRAL_EVENT_TEMPLATES[kind]
+  if (neutral) return { pre: neutral, team: null, post: '' }
+
+  const template = TEAM_EVENT_TEMPLATES[kind]
+  if (template && teamLabel) {
+    const idx = template.indexOf('{team}')
+    if (idx >= 0) {
+      return {
+        pre: template.slice(0, idx),
+        team: teamLabel,
+        post: template.slice(idx + '{team}'.length),
+      }
+    }
+    return { pre: template, team: null, post: '' }
+  }
+
+  // Known type but no team → show the human label.
+  // Unknown type → fall back to a prettified kind.
+  const fallbackLabel = (kind || 'event').replace(/_/g, ' ')
+  if (teamLabel) {
+    return { pre: '', team: teamLabel, post: ` — ${fallbackLabel}` }
+  }
+  return { pre: fallbackLabel, team: null, post: '' }
 }

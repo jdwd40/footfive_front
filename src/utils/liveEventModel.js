@@ -38,15 +38,35 @@ export const LIVE_SSE_EVENT_TYPES = [
 export function normalizeLiveEvent(raw, opts = {}) {
   if (raw == null) return null
   const sseType = opts.sseType
-  let data = raw
+  let parsed = raw
   if (typeof raw === 'string') {
     try {
-      data = JSON.parse(raw)
+      parsed = JSON.parse(raw)
     } catch {
       return null
     }
   }
-  if (!data || typeof data !== 'object') return null
+  if (!parsed || typeof parsed !== 'object') return null
+
+  // The backend wraps the meaningful fields inside `payload` (SSE feed) or
+  // `metadata` (REST `/fixtures/:id/events`). Flatten so downstream code can
+  // read teamId/homeTeam/awayTeam/displayName/description/score directly.
+  const payload =
+    parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : null
+  const metadata =
+    parsed.metadata && typeof parsed.metadata === 'object' ? parsed.metadata : null
+  let data = { ...parsed, ...(payload || {}), ...(metadata || {}) }
+
+  // The REST event shape stores team/player as plain strings rather than
+  // {id,name} objects. Lift them onto the canonical name fields.
+  if (typeof data.team === 'string') {
+    if (!data.teamName) data.teamName = data.team
+    data.team = null
+  }
+  if (typeof data.player === 'string') {
+    if (!data.displayName) data.displayName = data.player
+    data.player = null
+  }
 
   const legacyType = data.event_type || data.eventType
   const type =
@@ -172,4 +192,68 @@ export function dedupeLiveEventsBySeq(events) {
 
 export function mergeAndDedupeEvents(existing, incoming) {
   return dedupeLiveEventsBySeq([...(existing || []), ...(incoming || [])])
+}
+
+/**
+ * Resolve which team an event belongs to using context home/away teams.
+ *
+ * Tries, in order: teamId match → event.side ("home"/"away") → direct
+ * team object/name on the event. Returns the matched team and which side
+ * it represents within the match (when known).
+ *
+ * @param {object} event - Normalized live event
+ * @param {object} [ctx]
+ * @param {{id?: any, name?: string} | null} [ctx.homeTeam]
+ * @param {{id?: any, name?: string} | null} [ctx.awayTeam]
+ * @returns {{ team: {id?: any, name?: string} | null, side: 'home' | 'away' | null }}
+ */
+export function resolveEventTeam(event, ctx = {}) {
+  if (!event) return { team: null, side: null }
+
+  // Coerce string-form home/away (legacy callers pass just a name) into objects
+  // so id/name lookups are uniform.
+  const toTeamObj = (raw, fallbackId) => {
+    if (raw == null) return null
+    if (typeof raw === 'string') {
+      return { name: raw, id: fallbackId ?? null }
+    }
+    if (typeof raw === 'object') {
+      if (fallbackId != null && raw.id == null) return { ...raw, id: fallbackId }
+      return raw
+    }
+    return null
+  }
+
+  const home = toTeamObj(
+    ctx.homeTeam ?? event.homeTeam ?? event.home_team ?? null,
+    ctx.homeTeamId ?? null,
+  )
+  const away = toTeamObj(
+    ctx.awayTeam ?? event.awayTeam ?? event.away_team ?? null,
+    ctx.awayTeamId ?? null,
+  )
+
+  const teamId = event.teamId ?? event.team_id ?? event.team?.id ?? null
+  if (teamId != null) {
+    if (home?.id != null && String(home.id) === String(teamId)) {
+      return { team: home, side: 'home' }
+    }
+    if (away?.id != null && String(away.id) === String(teamId)) {
+      return { team: away, side: 'away' }
+    }
+  }
+
+  const side = event.side === 'home' || event.side === 'away' ? event.side : null
+  if (side === 'home' && home) return { team: home, side: 'home' }
+  if (side === 'away' && away) return { team: away, side: 'away' }
+
+  const directName =
+    event.team?.name || event.teamName || event.team_name || null
+  if (directName) {
+    if (home?.name && directName === home.name) return { team: home, side: 'home' }
+    if (away?.name && directName === away.name) return { team: away, side: 'away' }
+    return { team: { name: directName, id: event.team?.id ?? teamId ?? null }, side: null }
+  }
+
+  return { team: null, side: null }
 }

@@ -189,10 +189,12 @@ export default function LiveMatch() {
             </span>
           )}
         </div>
-        <EventFeed 
-          events={events} 
+        <EventFeed
+          events={events}
           homeTeam={fixture.home_team}
           awayTeam={fixture.away_team}
+          homeTeamId={fixture.home_team_id}
+          awayTeamId={fixture.away_team_id}
           autoScroll={isLive}
         />
       </div>

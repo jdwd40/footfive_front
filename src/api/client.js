@@ -63,15 +63,47 @@ const transformFixture = (fixture) => ({
   tournament_name: 'J-Cup',
 })
 
-// Transform event data from API format
-const transformEvent = (event) => ({
-  event_id: event.eventId || event.id,
-  event_type: event.type || event.eventType,
-  minute: event.minute,
-  second: event.second,
-  team_name: event.team?.name || event.teamName,
-  player_name: event.player?.name || event.playerName,
-})
+// Transform event data from API format.
+// The backend nests the meaningful fields under `metadata` (REST) or `payload`
+// (SSE). Flatten them so downstream code can read teamId/homeTeam/awayTeam/
+// displayName/score/description directly. `event.team` and `event.player` are
+// plain strings in the REST shape — lift them onto the canonical name fields.
+const transformEvent = (event) => {
+  const meta =
+    (event.metadata && typeof event.metadata === 'object' ? event.metadata : null) ||
+    (event.payload && typeof event.payload === 'object' ? event.payload : null) ||
+    {}
+  const teamRaw = event.team
+  const teamName =
+    (typeof teamRaw === 'string' ? teamRaw : teamRaw?.name) ||
+    event.teamName ||
+    event.team_name ||
+    meta.teamName ||
+    null
+  const teamId =
+    meta.teamId ?? event.teamId ?? event.team_id ?? (typeof teamRaw === 'object' ? teamRaw?.id : null) ?? null
+  const playerRaw = event.player
+  const playerName =
+    (typeof playerRaw === 'string' ? playerRaw : playerRaw?.name) ||
+    meta.displayName ||
+    event.displayName ||
+    event.playerName ||
+    event.player_name ||
+    null
+  return {
+    ...event,
+    ...meta,
+    metadata: meta,
+    event_id: event.eventId || event.id,
+    event_type: event.type || event.eventType,
+    minute: event.minute,
+    second: event.second,
+    team_id: teamId,
+    team_name: teamName,
+    player_name: playerName,
+    description: event.description ?? meta.description ?? null,
+  }
+}
 
 // J-Cup Tournament API
 export const jcupApi = {

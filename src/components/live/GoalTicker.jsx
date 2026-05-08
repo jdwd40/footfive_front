@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { resolveEventTeam } from '../../utils/liveEventModel'
 
 /**
  * GoalTicker - A scrolling ticker that shows live scores and announces match events
@@ -74,6 +75,18 @@ export default function GoalTicker({
         setQueue(prev => [...prev, announcement])
     }, [])
 
+    // Resolve the home/away team names for an event by consulting the
+    // matches array when the event payload does not carry team objects.
+    function resolveMatchTeams(event, matchesList) {
+        const fixtureId = event.fixtureId
+        const matchData = matchesList.find(m =>
+            m.fixtureId == fixtureId || String(m.fixtureId) === String(fixtureId)
+        )
+        const homeTeam = event.homeTeam?.name || matchData?.homeTeam?.name || 'Home'
+        const awayTeam = event.awayTeam?.name || matchData?.awayTeam?.name || 'Away'
+        return { homeTeam, awayTeam }
+    }
+
     // Process new events when goalEvents array grows
     useEffect(() => {
         const currentLength = goalEvents.length
@@ -100,8 +113,7 @@ export default function GoalTicker({
                 }
                 // EXTRA TIME event
                 else if (eventType === 'extra_time_start') {
-                    const homeTeam = event.homeTeam?.name || 'Home'
-                    const awayTeam = event.awayTeam?.name || 'Away'
+                    const { homeTeam, awayTeam } = resolveMatchTeams(event, matches)
                     const homeScore = event.score?.home ?? 0
                     const awayScore = event.score?.away ?? 0
 
@@ -115,8 +127,7 @@ export default function GoalTicker({
                 }
                 // PENALTIES event
                 else if (eventType === 'shootout_start') {
-                    const homeTeam = event.homeTeam?.name || 'Home'
-                    const awayTeam = event.awayTeam?.name || 'Away'
+                    const { homeTeam, awayTeam } = resolveMatchTeams(event, matches)
                     const homeScore = event.score?.home ?? 0
                     const awayScore = event.score?.away ?? 0
 
@@ -130,8 +141,7 @@ export default function GoalTicker({
                 }
                 // MATCH END / WINNER event
                 else if (eventType === 'match_end') {
-                    const homeTeam = event.homeTeam?.name || 'Home'
-                    const awayTeam = event.awayTeam?.name || 'Away'
+                    const { homeTeam, awayTeam } = resolveMatchTeams(event, matches)
                     const homeScore = event.score?.home ?? 0
                     const awayScore = event.score?.away ?? 0
                     const penHome = event.penaltyScore?.home
@@ -180,12 +190,6 @@ export default function GoalTicker({
     function formatGoalAnnouncement(goal) {
         if (!goal) return null
 
-        const scoringTeam = goal.teamId === goal.homeTeam?.id
-            ? goal.homeTeam
-            : goal.awayTeam
-
-        const scoringTeamName = scoringTeam?.name || goal.team_name || 'Team'
-
         // Try to get the current score from the matches array for accuracy
         const fixtureId = goal.fixtureId
         const matchData = matches.find(m =>
@@ -193,10 +197,19 @@ export default function GoalTicker({
         )
 
         // Use match data if available, otherwise fall back to event data
+        const homeTeamObj = goal.homeTeam || matchData?.homeTeam || null
+        const awayTeamObj = goal.awayTeam || matchData?.awayTeam || null
         const homeScore = matchData?.score?.home ?? goal.score?.home ?? 0
         const awayScore = matchData?.score?.away ?? goal.score?.away ?? 0
-        const homeTeamName = matchData?.homeTeam?.name || goal.homeTeam?.name || 'Home'
-        const awayTeamName = matchData?.awayTeam?.name || goal.awayTeam?.name || 'Away'
+        const homeTeamName = homeTeamObj?.name || 'Home'
+        const awayTeamName = awayTeamObj?.name || 'Away'
+
+        const { team: scoringTeam, side: scoringSide } = resolveEventTeam(goal, {
+            homeTeam: homeTeamObj,
+            awayTeam: awayTeamObj,
+        })
+        const scoringTeamName =
+            scoringTeam?.name || goal.team?.name || goal.team_name || goal.teamName || 'Team'
 
         const isPenalty = goal.type === 'penalty_scored' || goal.type === 'penalty_goal'
         const isShootout = goal.type === 'shootout_goal'
@@ -206,8 +219,8 @@ export default function GoalTicker({
         if (homeScore === awayScore) {
             announcementText = `${scoringTeamName} have equalized!`
         } else if (
-            (goal.teamId === goal.homeTeam?.id && homeScore > awayScore) ||
-            (goal.teamId === goal.awayTeam?.id && awayScore > homeScore)
+            (scoringSide === 'home' && homeScore > awayScore) ||
+            (scoringSide === 'away' && awayScore > homeScore)
         ) {
             if (Math.abs(homeScore - awayScore) === 1 && (homeScore + awayScore) > 1) {
                 announcementText = `${scoringTeamName} take the lead!`
@@ -226,7 +239,7 @@ export default function GoalTicker({
             text: announcementText,
             score: `${homeTeamName} ${homeScore} - ${awayScore} ${awayTeamName}`,
             minute: goal.minute,
-            playerName: goal.displayName || goal.player_name,
+            playerName: goal.displayName || goal.player_name || goal.player?.name,
             duration: GOAL_DURATION,
         }
     }
