@@ -100,6 +100,21 @@ export const eventIcons = {
   injury: '🏥',
   var_check: '📺',
   offside: '🚫',
+  // Flow / narration events
+  possession: '🔵',
+  build_up: '📈',
+  keeper_distribution: '🧤',
+  defensive_action: '🛡️',
+  chance_created: '✨',
+  shot: '🎯',
+  save: '🧤',
+  miss: '❌',
+  block: '🛡️',
+  counter_attack: '⚡',
+  breakaway: '💨',
+  final_score: '🏁',
+  match_winner: '🏆',
+  match_draw: '🤝',
 }
 
 export const getEventIcon = (eventType) => {

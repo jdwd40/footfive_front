@@ -80,8 +80,15 @@ export default function LiveMatchDetail() {
 
   const onEvent = useCallback(
     (event) => {
+      console.log('[LMD] onEvent', event.type, 'seq', event.seq, 'fixtureId', event.fixtureId, 'route', fixtureId)
       if (event.type === 'connected') return
-      if (String(event.fixtureId) !== String(fixtureId)) return
+      // SSE stream already filtered by fixtureId on the backend; only drop
+      // when the event carries an explicit, mismatched id. Flow events
+      // (possession/save/miss/etc.) often omit fixtureId on the stream.
+      if (event.fixtureId != null && String(event.fixtureId) !== String(fixtureId)) {
+        console.log('[LMD] dropped: fixtureId mismatch')
+        return
+      }
 
       useLiveStore.getState().handleEvent(event)
 

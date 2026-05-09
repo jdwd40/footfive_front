@@ -227,6 +227,8 @@ const NEUTRAL_EVENT_TEMPLATES = {
   match_end: 'Match Over',
   connected: 'Connected',
   var_check: 'VAR Review',
+  final_score: 'Final Score',
+  match_draw: 'Match Drawn',
 }
 
 // Team-affiliated events. `{team}` is replaced with the resolved team name.
@@ -243,10 +245,14 @@ const TEAM_EVENT_TEMPLATES = {
   shot_missed: '{team}’s shot off target',
   shot_off: '{team}’s shot off target',
   shot_blocked: '{team}’s shot blocked',
+  save: '{team} make a save',
+  miss: '{team} off target',
+  block: '{team} block the shot',
   attack: '{team} push forward',
   attacking_play: '{team} push forward',
   attack_phase: '{team} push forward',
   counter_attack: '{team} break on the counter',
+  breakaway: '{team} break away',
   build_up: '{team} build up play',
   build_up_play: '{team} build up play',
   buildup: '{team} build up play',
@@ -259,6 +265,8 @@ const TEAM_EVENT_TEMPLATES = {
   big_chance: 'Big chance for {team}!',
   defensive_play: '{team} defending',
   defending: '{team} defending',
+  defensive_action: '{team} defending',
+  keeper_distribution: '{team} keeper plays it out',
   pressing: '{team} press high',
   tackle: 'Tackle by {team}',
   interception: '{team} intercept',
@@ -276,6 +284,7 @@ const TEAM_EVENT_TEMPLATES = {
   penalty_saved: '{team}’s penalty saved',
   penalty_missed: '{team}’s penalty missed',
   injury: 'Injury — {team}',
+  match_winner: '{team} win the match',
 }
 
 /**

@@ -3,31 +3,70 @@
  * @see front_end_integration_guide.md
  */
 
-/** SSE named events the backend may emit (non-exhaustive; unknown types still normalized). */
+/** SSE named events the backend may emit (non-exhaustive; unknown types still normalized).
+ *  EventSource only delivers a named event to listeners explicitly registered for that name
+ *  (onmessage fires only for un-named messages), so any flow type the backend emits as a
+ *  named SSE event MUST appear here or the frontend silently drops it.
+ */
 export const LIVE_SSE_EVENT_TYPES = [
   'connected',
-  'goal',
-  'penalty_scored',
+  // Match-state lifecycle
   'match_start',
+  'kickoff',
   'halftime',
   'second_half_start',
   'fulltime',
   'match_end',
+  'match_recap',
   'extra_time_start',
   'extra_time_half',
   'extra_time_end',
+  // Shootout
   'shootout_start',
   'shootout_goal',
   'shootout_miss',
   'shootout_save',
+  'shootout_walkup',
+  'shootout_reaction',
   'shootout_end',
+  // Goals / shots / chances
+  'goal',
+  'chance_created',
+  'shot_saved',
+  'shot_missed',
+  // Discipline / set pieces
+  'corner',
+  'foul',
   'yellow_card',
   'red_card',
+  // Penalties (in-play and pre-shootout)
+  'penalty_awarded',
+  'penalty_scored',
+  'penalty_missed',
+  'penalty_saved',
+  // Tournament lifecycle (mostly filtered out for fixture streams, listed for completeness)
   'round_start',
   'round_complete',
   'state_change',
   'tournament_state',
   'tournament_end',
+  // Flow / narration events
+  'possession',
+  'possession_play',
+  'build_up',
+  'build_up_play',
+  'ball_progression',
+  'keeper_distribution',
+  'defensive_action',
+  'shot',
+  'save',
+  'miss',
+  'block',
+  'counter_attack',
+  'breakaway',
+  'final_score',
+  'match_winner',
+  'match_draw',
 ]
 
 /**

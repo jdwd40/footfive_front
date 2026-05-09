@@ -59,6 +59,8 @@ export function useLiveEvents({
   const pushEvent = useCallback((normalized) => {
     if (!normalized || !mountedRef.current) return
 
+    console.log('[SSE] event', normalized.type, 'seq', normalized.seq, 'fixtureId', normalized.fixtureId)
+
     if (normalized.type !== 'connected' && normalized.seq > 0) {
       lastSeqRef.current = Math.max(lastSeqRef.current, normalized.seq)
     } else if (normalized.type === 'connected' && normalized.seq > 0) {
@@ -212,18 +214,23 @@ export function useLiveEvents({
     }
   }, [seedAfterSeq])
 
+  // Own the EventSource lifecycle. Depending on `connect` directly would
+  // tear down + rebuild the stream every time the callback identity flips
+  // (e.g. when an upstream prop wobble recreates a closure), and during
+  // the cleanup gap any events arriving on the closing socket are dropped.
+  // Track the actual params instead and call the latest connect via ref.
   useEffect(() => {
     mountedRef.current = true
 
     if (enabled) {
-      connect()
+      connectRef.current()
     }
 
     return () => {
       mountedRef.current = false
       disconnect()
     }
-  }, [enabled, connect, disconnect])
+  }, [enabled, tournamentId, fixtureId, category, disconnect])
 
   return {
     connected,
