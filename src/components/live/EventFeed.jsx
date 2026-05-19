@@ -109,12 +109,37 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
     kind === 'goal' ||
     kind === 'penalty_goal' ||
     kind === 'penalty_scored' ||
-    kind === 'shootout_goal'
+    kind === 'shootout_goal' ||
+    kind === 'shootout_end'
+  const isPenaltyAwarded = kind === 'penalty_awarded'
   const isImportant =
-    isGoal ||
     kind === 'red_card' ||
-    kind === 'penalty_awarded' ||
-    kind === 'yellow_card'
+    kind === 'yellow_card' ||
+    kind === 'shot_saved' ||
+    kind === 'shot_missed' ||
+    kind === 'shot_blocked' ||
+    kind === 'penalty_saved' ||
+    kind === 'penalty_missed' ||
+    kind === 'shootout_save' ||
+    kind === 'shootout_miss' ||
+    kind === 'counter_attack'
+  const isTension =
+    kind === 'penalty_walkup' ||
+    kind === 'penalty_run_up' ||
+    kind === 'shootout_walkup'
+  const isShootoutReaction = kind === 'shootout_reaction'
+
+  const surfaceStyle = isGoal
+    ? 'bg-primary/15 border border-primary/40 shadow-lg shadow-primary/20'
+    : isPenaltyAwarded
+      ? 'bg-amber-500/12 border border-amber-500/35'
+      : isImportant
+        ? 'bg-yellow-500/10 border border-yellow-500/30'
+        : isTension
+          ? 'bg-orange-500/5 border border-orange-400/25'
+          : isShootoutReaction
+            ? 'bg-violet-500/8 border border-violet-400/25'
+            : 'bg-card hover:bg-card-hover'
 
   const minute = event.minute != null ? event.minute : 0
   const second = event.second != null ? event.second : 0
@@ -122,15 +147,11 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
   return (
     <div
       className={`
-        flex items-center gap-3 p-3 rounded-xl transition-all duration-300
+        flex items-center gap-3 rounded-xl transition-all duration-300
+        ${isShootoutReaction ? 'p-2' : 'p-3'}
         ${isLatest ? 'animate-slide-up' : ''}
-        ${
-          isGoal
-            ? 'bg-primary/15 border border-primary/40 shadow-lg shadow-primary/20'
-            : isImportant
-              ? 'bg-yellow-500/10 border border-yellow-500/30'
-              : 'bg-card hover:bg-card-hover'
-        }
+        ${surfaceStyle}
+        ${isTension ? 'animate-[pulse_3s_ease-in-out_infinite]' : ''}
         ${isNeutral ? '' : isHomeTeam ? 'border-l-4 border-l-primary' : teamLabel ? 'border-r-4 border-r-blue-500' : ''}
       `}
     >
@@ -150,15 +171,28 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
 
       <div
         className={`
-        w-10 h-10 rounded-full flex items-center justify-center text-xl
-        ${isGoal ? 'bg-primary/30 animate-pulse' : 'bg-card-hover'}
+        rounded-full flex items-center justify-center
+        ${isShootoutReaction ? 'w-8 h-8 text-lg' : 'w-10 h-10 text-xl'}
+        ${isGoal ? 'bg-primary/30 animate-pulse' : isTension ? 'bg-orange-500/15' : isShootoutReaction ? 'bg-violet-500/15' : 'bg-card-hover'}
       `}
       >
         {getEventIcon(kind)}
       </div>
 
       <div className="flex-1 min-w-0">
-        <p className={`font-semibold ${isGoal ? 'text-primary text-lg' : 'text-text'}`}>
+        <p
+          className={`font-semibold ${
+            isGoal
+              ? 'text-primary text-lg'
+              : isShootoutReaction
+                ? 'text-sm text-violet-200'
+                : isTension
+                  ? 'text-text italic'
+                  : isPenaltyAwarded
+                    ? 'text-amber-200'
+                    : 'text-text'
+          }`}
+        >
           {(() => {
             const { pre, team, post } = formatEventHeadline(kind, teamLabel)
             const teamColor = isHomeTeam ? 'text-primary' : 'text-blue-400'
@@ -223,7 +257,8 @@ const NEUTRAL_EVENT_TEMPLATES = {
   extra_time_half: 'ET Half Time',
   extra_time_end: 'Extra Time End',
   shootout_start: 'Shootout Begins',
-  shootout_end: 'Shootout Over',
+  shootout_end: 'Shootout decided',
+  kickoff_restart: 'Play Resumes',
   match_end: 'Match Over',
   connected: 'Connected',
   var_check: 'VAR Review',
@@ -234,11 +269,11 @@ const NEUTRAL_EVENT_TEMPLATES = {
 // Team-affiliated events. `{team}` is replaced with the resolved team name.
 const TEAM_EVENT_TEMPLATES = {
   goal: '{team} GOAL!!!',
-  penalty_scored: '{team} score from the spot',
-  penalty_goal: '{team} score from the spot',
-  shootout_goal: '{team} score in the shootout',
-  shootout_miss: '{team} miss in the shootout',
-  shootout_save: '{team}’s penalty saved',
+  penalty_scored: 'PENALTY — {team} score!',
+  penalty_goal: 'PENALTY — {team} score!',
+  shootout_goal: '{team} bury it in the shootout!',
+  shootout_miss: 'MISS — {team} in the shootout',
+  shootout_save: 'SAVED — {team} denied in the shootout',
   shot: '{team} take a shot',
   shot_attempt: '{team} take a shot',
   shot_saved: '{team}’s shot saved',
@@ -280,9 +315,17 @@ const TEAM_EVENT_TEMPLATES = {
   red_card: 'RED CARD — {team}',
   offside: 'Offside against {team}',
   substitution: '{team} substitution',
-  penalty_awarded: 'PENALTY to {team}!',
-  penalty_saved: '{team}’s penalty saved',
-  penalty_missed: '{team}’s penalty missed',
+  penalty_awarded: 'PENALTY awarded to {team}!',
+  penalty_saved: 'SAVED! {team}’s penalty stopped',
+  penalty_missed: 'MISS! {team}’s penalty off target',
+  midfield_battle: 'Midfield battle — {team}',
+  goal_build_up: '{team} build the attack',
+  attack_breakdown: '{team} lose the ball',
+  counter_breakdown: 'Counter breaks down — {team}',
+  penalty_walkup: '{team} walk to the spot…',
+  penalty_run_up: '{team} at the run-up…',
+  shootout_walkup: '{team} step up in the shootout…',
+  shootout_reaction: '{team} react',
   injury: 'Injury — {team}',
   match_winner: '{team} win the match',
 }

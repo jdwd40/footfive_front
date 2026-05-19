@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { liveApi } from '../api/client'
 import useLiveStore from '../stores/useLiveStore'
 import useLiveEvents from '../hooks/useLiveEvents'
+import usePacedEventReveal from '../hooks/usePacedEventReveal'
 import MatchClock from '../components/live/MatchClock'
 import EventFeed from '../components/live/EventFeed'
 import LoadingSpinner from '../components/common/LoadingSpinner'
@@ -11,7 +12,11 @@ import { useToast } from '../components/common/Toast'
 import {
   dedupeLiveEventsBySeq,
   sortLiveEventsDesc,
+  canApplyMatchScoreFromEvent,
+  canApplyPenaltyScoreFromEvent,
+  GOAL_TOAST_EVENT_TYPES,
 } from '../utils/liveEventModel'
+import { getEventDedupeKey } from '../hooks/usePacedEventReveal'
 
 const SEQ_STORAGE_PREFIX = 'footfive:lastSeq:'
 const LIVE_MATCH_POLL_MS = 2000
@@ -34,8 +39,8 @@ function applyLiveEventToMatch(match, event) {
   const updates = {}
   if (event.minute != null) updates.minute = event.minute
   if (event.second != null) updates.second = event.second
-  if (event.score) updates.score = event.score
-  if (event.penaltyScore) updates.penaltyScore = event.penaltyScore
+  if (canApplyMatchScoreFromEvent(event)) updates.score = event.score
+  if (canApplyPenaltyScoreFromEvent(event)) updates.penaltyScore = event.penaltyScore
 
   return Object.keys(updates).length > 0 ? { ...match, ...updates } : match
 }
@@ -73,9 +78,54 @@ export default function LiveMatchDetail() {
   const [error, setError] = useState(null)
   const [bootstrapDone, setBootstrapDone] = useState(false)
   const [seedAfterSeq, setSeedAfterSeq] = useState(0)
+  const goalToastSeenRef = useRef(new Set())
+
+  const handleEventRevealed = useCallback(
+    (event) => {
+      if (!GOAL_TOAST_EVENT_TYPES.has(event.type)) return
+      const key = getEventDedupeKey(event)
+      if (goalToastSeenRef.current.has(key)) return
+      goalToastSeenRef.current.add(key)
+      addToast(`⚽ ${event.displayName || 'Goal'}`, 'goal', 5000)
+    },
+    [addToast]
+  )
+
+  const {
+    visibleEvents,
+    enqueue: enqueueVisibleEvent,
+    setVisibleImmediately,
+    appendVisibleImmediately,
+    reset: resetVisibleEvents,
+  } = usePacedEventReveal({ defaultDelayMs: 1000, onEventRevealed: handleEventRevealed })
+
+  const catchUpBufferRef = useRef([])
+  const catchUpTimerRef = useRef(null)
+  const inCatchUpRef = useRef(false)
+  const hadConnectedRef = useRef(false)
+  const prevConnectedRef = useRef(false)
 
   const storeMatch = useLiveStore((state) =>
     state.matches.find((m) => m.fixtureId == fixtureId || String(m.fixtureId) === String(fixtureId))
+  )
+
+  const flushCatchUpBuffer = useCallback(() => {
+    if (catchUpTimerRef.current) {
+      clearTimeout(catchUpTimerRef.current)
+      catchUpTimerRef.current = null
+    }
+    inCatchUpRef.current = false
+    const batch = catchUpBufferRef.current
+    catchUpBufferRef.current = []
+    if (batch.length > 0) appendVisibleImmediately(batch)
+  }, [appendVisibleImmediately])
+
+  const scheduleCatchUpFlush = useCallback(
+    (delayMs = 150) => {
+      if (catchUpTimerRef.current) clearTimeout(catchUpTimerRef.current)
+      catchUpTimerRef.current = setTimeout(flushCatchUpBuffer, delayMs)
+    },
+    [flushCatchUpBuffer]
   )
 
   const onEvent = useCallback(
@@ -104,9 +154,14 @@ export default function LiveMatchDetail() {
         setSeedAfterSeq((s) => Math.max(s, event.seq))
       }
 
-      if (event.type === 'goal' || event.type === 'penalty_scored' || event.type === 'shootout_goal') {
-        addToast(`⚽ ${event.displayName || 'Goal'}`, 'goal', 5000)
-      } else if (event.type === 'halftime') {
+      if (inCatchUpRef.current) {
+        catchUpBufferRef.current.push(event)
+        scheduleCatchUpFlush(150)
+      } else {
+        enqueueVisibleEvent(event)
+      }
+
+      if (event.type === 'halftime') {
         setMatch((prev) => (prev ? { ...prev, state: 'HALFTIME' } : prev))
       } else if (event.type === 'second_half_start') {
         setMatch((prev) => (prev ? { ...prev, state: 'SECOND_HALF' } : prev))
@@ -135,7 +190,7 @@ export default function LiveMatchDetail() {
         )
       }
     },
-    [fixtureId, addToast]
+    [fixtureId, addToast, enqueueVisibleEvent, scheduleCatchUpFlush]
   )
 
   const { connected, connecting, error: sseError, reconnect } = useLiveEvents({
@@ -145,10 +200,19 @@ export default function LiveMatchDetail() {
     enabled: bootstrapDone && !!fixtureId,
   })
 
+  const beginCatchUpWindow = useCallback(() => {
+    inCatchUpRef.current = true
+    catchUpBufferRef.current = []
+    scheduleCatchUpFlush(500)
+  }, [scheduleCatchUpFlush])
+
   const fetchMatch = useCallback(async () => {
     setLoading(true)
     setError(null)
     setBootstrapDone(false)
+    resetVisibleEvents()
+    goalToastSeenRef.current.clear()
+    flushCatchUpBuffer()
 
     try {
       let data = null
@@ -186,6 +250,7 @@ export default function LiveMatchDetail() {
       maxSeq = Math.max(maxSeq, readStoredSeq(fixtureId))
 
       setEvents(sorted)
+      setVisibleImmediately(sorted)
       setSeedAfterSeq(maxSeq)
 
       if (!data) {
@@ -202,11 +267,28 @@ export default function LiveMatchDetail() {
       setLoading(false)
       setBootstrapDone(true)
     }
-  }, [fixtureId])
+  }, [fixtureId, resetVisibleEvents, flushCatchUpBuffer, setVisibleImmediately])
 
   useEffect(() => {
     fetchMatch()
   }, [fetchMatch])
+
+  useEffect(() => {
+    if (connected && bootstrapDone && hadConnectedRef.current && !prevConnectedRef.current) {
+      beginCatchUpWindow()
+    }
+
+    if (connected) {
+      hadConnectedRef.current = true
+    }
+    prevConnectedRef.current = connected
+  }, [connected, bootstrapDone, beginCatchUpWindow])
+
+  useEffect(() => {
+    return () => {
+      if (catchUpTimerRef.current) clearTimeout(catchUpTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     if (storeMatch && !match) {
@@ -403,7 +485,7 @@ export default function LiveMatchDetail() {
         </div>
 
         <EventFeed
-          events={events}
+          events={visibleEvents}
           homeTeam={match?.homeTeam}
           awayTeam={match?.awayTeam}
           autoScroll={isLive}

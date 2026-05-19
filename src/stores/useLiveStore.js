@@ -4,6 +4,8 @@ import {
   normalizeLiveEvent,
   dedupeLiveEventsBySeq,
   sortLiveEventsDesc,
+  canApplyMatchScoreFromEvent,
+  canApplyPenaltyScoreFromEvent,
 } from '../utils/liveEventModel'
 import { isTournamentPlayingState, isTournamentBreakLikeState } from '../utils/tournamentPhases'
 
@@ -445,8 +447,8 @@ export const useLiveStore = create((set, get) => ({
       const liveUpdates = {}
       if (minute != null) liveUpdates.minute = minute
       if (second != null) liveUpdates.second = second
-      if (score) liveUpdates.score = score
-      if (penaltyScore) liveUpdates.penaltyScore = penaltyScore
+      if (canApplyMatchScoreFromEvent(normalized)) liveUpdates.score = score
+      if (canApplyPenaltyScoreFromEvent(normalized)) liveUpdates.penaltyScore = penaltyScore
 
       if (Object.keys(liveUpdates).length > 0) {
         set(state => ({
@@ -465,26 +467,6 @@ export const useLiveStore = create((set, get) => ({
 
     // Handle specific event types
     switch (type) {
-      case 'goal':
-      case 'penalty_scored':
-      case 'shootout_goal':
-        // Update match score in fixtures array
-        if (fixtureId && score) {
-          set(state => ({
-            fixtures: state.fixtures.map(m =>
-              matchesFixtureId(m, fixtureId)
-                ? { ...m, score, penaltyScore: penaltyScore || m.penaltyScore }
-                : m
-            ),
-            matches: state.matches.map(m =>
-              matchesFixtureId(m, fixtureId)
-                ? { ...m, score, penaltyScore: penaltyScore || m.penaltyScore }
-                : m
-            )
-          }))
-        }
-        break
-
       case 'halftime':
       case 'second_half_start':
       case 'extra_time_start':

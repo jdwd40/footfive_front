@@ -13,6 +13,7 @@ export const LIVE_SSE_EVENT_TYPES = [
   // Match-state lifecycle
   'match_start',
   'kickoff',
+  'kickoff_restart',
   'halftime',
   'second_half_start',
   'fulltime',
@@ -31,9 +32,11 @@ export const LIVE_SSE_EVENT_TYPES = [
   'shootout_end',
   // Goals / shots / chances
   'goal',
+  'goal_build_up',
   'chance_created',
   'shot_saved',
   'shot_missed',
+  'shot_blocked',
   // Discipline / set pieces
   'corner',
   'foul',
@@ -41,6 +44,8 @@ export const LIVE_SSE_EVENT_TYPES = [
   'red_card',
   // Penalties (in-play and pre-shootout)
   'penalty_awarded',
+  'penalty_walkup',
+  'penalty_run_up',
   'penalty_scored',
   'penalty_missed',
   'penalty_saved',
@@ -62,12 +67,30 @@ export const LIVE_SSE_EVENT_TYPES = [
   'save',
   'miss',
   'block',
+  'midfield_battle',
+  'attack_breakdown',
   'counter_attack',
+  'counter_breakdown',
   'breakaway',
   'final_score',
   'match_winner',
   'match_draw',
 ]
+
+/**
+ * @param {unknown} raw
+ * @returns {{ delay_ms: number | null, hold_ms: number | null } | null}
+ */
+function normalizePacing(raw) {
+  if (raw == null || typeof raw !== 'object') return null
+  const delay_ms = raw.delay_ms ?? raw.delayMs ?? null
+  const hold_ms = raw.hold_ms ?? raw.holdMs ?? null
+  if (delay_ms == null && hold_ms == null) return null
+  return {
+    delay_ms: delay_ms != null ? Number(delay_ms) : null,
+    hold_ms: hold_ms != null ? Number(hold_ms) : null,
+  }
+}
 
 /**
  * @param {unknown} raw - Parsed JSON object or legacy row
@@ -94,6 +117,7 @@ export function normalizeLiveEvent(raw, opts = {}) {
     parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : null
   const metadata =
     parsed.metadata && typeof parsed.metadata === 'object' ? parsed.metadata : null
+  const metadataPacing = metadata?.pacing ?? null
   let data = { ...parsed, ...(payload || {}), ...(metadata || {}) }
 
   // The REST event shape stores team/player as plain strings rather than
@@ -159,9 +183,30 @@ export function normalizeLiveEvent(raw, opts = {}) {
 
   const description = data.description ?? null
 
+  const bundleId = data.bundleId ?? data.bundle_id ?? null
+  let bundleStep = null
+  if (data.bundleStep !== undefined) bundleStep = data.bundleStep
+  else if (data.bundle_step !== undefined) bundleStep = data.bundle_step
+
+  const chain_type = data.chain_type ?? data.chainType ?? null
+  const chainType = data.chainType ?? data.chain_type ?? null
+  const chain_terminal = data.chain_terminal ?? data.chainTerminal ?? null
+  const chainTerminal = data.chainTerminal ?? data.chain_terminal ?? null
+
+  const pacingSource =
+    data.pacing != null ? data.pacing : metadataPacing ?? parsed.metadata?.pacing ?? null
+  const pacing = normalizePacing(pacingSource)
+
   return {
     ...data,
     type,
+    bundleId,
+    bundleStep,
+    chain_type,
+    chainType,
+    chain_terminal,
+    chainTerminal,
+    pacing: pacing ?? undefined,
     seq: Number.isFinite(seq) ? seq : 0,
     fixtureId,
     tournamentId: data.tournamentId ?? data.tournament_id ?? null,
@@ -231,6 +276,41 @@ export function dedupeLiveEventsBySeq(events) {
 
 export function mergeAndDedupeEvents(existing, incoming) {
   return dedupeLiveEventsBySeq([...(existing || []), ...(incoming || [])])
+}
+
+/** Event types that may carry an authoritative match score snapshot. */
+const MATCH_SCORE_EVENT_TYPES = new Set([
+  'goal',
+  'penalty_scored',
+  'match_end',
+  'shootout_end',
+])
+
+/** Event types that may carry an authoritative penalty-shootout score snapshot. */
+const PENALTY_SCORE_EVENT_TYPES = new Set([
+  'shootout_goal',
+  'penalty_scored',
+  'match_end',
+  'shootout_end',
+])
+
+/** Goal toasts fire on paced reveal for these types only. */
+export const GOAL_TOAST_EVENT_TYPES = new Set(['goal', 'penalty_scored'])
+
+/**
+ * Whether `event.score` should update displayed match score (not type-based increment).
+ * @param {object} event
+ */
+export function canApplyMatchScoreFromEvent(event) {
+  return Boolean(event?.score && MATCH_SCORE_EVENT_TYPES.has(event.type))
+}
+
+/**
+ * Whether `event.penaltyScore` should update displayed shootout score.
+ * @param {object} event
+ */
+export function canApplyPenaltyScoreFromEvent(event) {
+  return Boolean(event?.penaltyScore && PENALTY_SCORE_EVENT_TYPES.has(event.type))
 }
 
 /**
