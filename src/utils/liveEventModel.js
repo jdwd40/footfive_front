@@ -313,12 +313,53 @@ export function canApplyPenaltyScoreFromEvent(event) {
   return Boolean(event?.penaltyScore && PENALTY_SCORE_EVENT_TYPES.has(event.type))
 }
 
+/** Flow events where title + subtitle should name the same possessing/attacking team. */
+export const POSSESSION_FLOW_EVENT_TYPES = new Set([
+  'possession',
+  'possession_play',
+  'build_up',
+  'build_up_play',
+  'buildup',
+  'ball_progression',
+  'ball_progress',
+  'progression',
+  'goal_build_up',
+  'midfield_battle',
+  'keeper_distribution',
+  'attacking_play',
+  'attack',
+  'attack_phase',
+])
+
+/** Events where a defending opponent may appear in copy. */
+export const BREAKDOWN_EVENT_TYPES = new Set(['attack_breakdown', 'counter_breakdown'])
+
+function teamNameAppearsInText(name, text) {
+  if (!name || !text) return false
+  if (text.includes(name)) return true
+  const token = name.split(/\s+/)[0]
+  return token.length >= 3 && text.includes(token)
+}
+
+/**
+ * @param {string | null | undefined} text
+ * @param {string | null | undefined} homeName
+ * @param {string | null | undefined} awayName
+ * @returns {'home' | 'away' | null}
+ */
+export function findTeamSideInText(text, homeName, awayName) {
+  if (!text) return null
+  const homeHit = teamNameAppearsInText(homeName, text)
+  const awayHit = teamNameAppearsInText(awayName, text)
+  if (homeHit && !awayHit) return 'home'
+  if (awayHit && !homeHit) return 'away'
+  return null
+}
+
 /**
  * Resolve which team an event belongs to using context home/away teams.
  *
- * Tries, in order: teamId match → event.side ("home"/"away") → direct
- * team object/name on the event. Returns the matched team and which side
- * it represents within the match (when known).
+ * Tries, in order: explicit team name → teamId match → event.side → fallback null.
  *
  * @param {object} event - Normalized live event
  * @param {object} [ctx]
@@ -329,8 +370,6 @@ export function canApplyPenaltyScoreFromEvent(event) {
 export function resolveEventTeam(event, ctx = {}) {
   if (!event) return { team: null, side: null }
 
-  // Coerce string-form home/away (legacy callers pass just a name) into objects
-  // so id/name lookups are uniform.
   const toTeamObj = (raw, fallbackId) => {
     if (raw == null) return null
     if (typeof raw === 'string') {
@@ -353,6 +392,15 @@ export function resolveEventTeam(event, ctx = {}) {
   )
 
   const teamId = event.teamId ?? event.team_id ?? event.team?.id ?? null
+
+  const directName =
+    event.team?.name || event.teamName || event.team_name || null
+  if (directName) {
+    if (home?.name && directName === home.name) return { team: home, side: 'home' }
+    if (away?.name && directName === away.name) return { team: away, side: 'away' }
+    return { team: { name: directName, id: event.team?.id ?? teamId ?? null }, side: null }
+  }
+
   if (teamId != null) {
     if (home?.id != null && String(home.id) === String(teamId)) {
       return { team: home, side: 'home' }
@@ -366,13 +414,112 @@ export function resolveEventTeam(event, ctx = {}) {
   if (side === 'home' && home) return { team: home, side: 'home' }
   if (side === 'away' && away) return { team: away, side: 'away' }
 
-  const directName =
-    event.team?.name || event.teamName || event.team_name || null
-  if (directName) {
-    if (home?.name && directName === home.name) return { team: home, side: 'home' }
-    if (away?.name && directName === away.name) return { team: away, side: 'away' }
-    return { team: { name: directName, id: event.team?.id ?? teamId ?? null }, side: null }
+  return { team: null, side: null }
+}
+
+/**
+ * Opponent of the resolved event team within the match.
+ * @param {object} event
+ * @param {object} ctx
+ * @param {{ team: object | null, side: 'home' | 'away' | null }} [resolved]
+ */
+export function resolveOpponentTeam(event, ctx = {}, resolved = null) {
+  const { team, side } = resolved || resolveEventTeam(event, ctx)
+  const toTeamObj = (raw, fallbackId) => {
+    if (raw == null) return null
+    if (typeof raw === 'string') return { name: raw, id: fallbackId ?? null }
+    if (typeof raw === 'object') {
+      if (fallbackId != null && raw.id == null) return { ...raw, id: fallbackId }
+      return raw
+    }
+    return null
+  }
+  const home = toTeamObj(ctx.homeTeam ?? event?.homeTeam ?? event?.home_team ?? null, ctx.homeTeamId)
+  const away = toTeamObj(ctx.awayTeam ?? event?.awayTeam ?? event?.away_team ?? null, ctx.awayTeamId)
+
+  if (side === 'home' && away) return { team: away, side: 'away' }
+  if (side === 'away' && home) return { team: home, side: 'home' }
+  if (team?.name && home?.name && team.name === home.name && away) {
+    return { team: away, side: 'away' }
+  }
+  if (team?.name && away?.name && team.name === away.name && home) {
+    return { team: home, side: 'home' }
+  }
+  return { team: null, side: null }
+}
+
+/**
+ * Prefer backend description's named team for flow events when it disagrees with id/side resolution.
+ */
+export function reconcileEventTeamWithDescription(event, ctx, description) {
+  const resolved = resolveEventTeam(event, ctx)
+  if (!description) return resolved
+
+  const homeName =
+    typeof ctx.homeTeam === 'string' ? ctx.homeTeam : ctx.homeTeam?.name ?? event?.homeTeam?.name
+  const awayName =
+    typeof ctx.awayTeam === 'string' ? ctx.awayTeam : ctx.awayTeam?.name ?? event?.awayTeam?.name
+  const descSide = findTeamSideInText(description, homeName, awayName)
+  if (!descSide) return resolved
+
+  const kind = event?.type || event?.event_type || ''
+  const flowEvent = POSSESSION_FLOW_EVENT_TYPES.has(kind) || BREAKDOWN_EVENT_TYPES.has(kind)
+  if (!flowEvent) return resolved
+
+  const teamLabel = resolved.team?.name
+  const descTeamName = descSide === 'home' ? homeName : awayName
+  if (teamLabel && descTeamName && teamLabel !== descTeamName) {
+    const home = ctx.homeTeam ?? event?.homeTeam
+    const away = ctx.awayTeam ?? event?.awayTeam
+    const toTeamObj = (raw, fallbackId) => {
+      if (raw == null) return null
+      if (typeof raw === 'string') return { name: raw, id: fallbackId ?? null }
+      return typeof raw === 'object' ? raw : null
+    }
+    const teamObj = descSide === 'home' ? toTeamObj(home, ctx.homeTeamId) : toTeamObj(away, ctx.awayTeamId)
+    if (teamObj?.name) return { team: teamObj, side: descSide }
   }
 
-  return { team: null, side: null }
+  return resolved
+}
+
+/** Backend phrasing that mislabels the defending action (attack vs defence). */
+export function isMisleadingBreakdownDescription(description) {
+  if (!description) return false
+  return /shut down by .+'s attack/i.test(description)
+}
+
+/**
+ * @param {string | null | undefined} teamLabel
+ * @param {string | null | undefined} opponentLabel
+ */
+export function buildBreakdownSubtitle(teamLabel, opponentLabel) {
+  if (opponentLabel && teamLabel) {
+    return `${opponentLabel}'s defence shuts them down`
+  }
+  if (teamLabel) return `${teamLabel}'s attack breaks down`
+  return null
+}
+
+/**
+ * Latest authoritative scores from a newest-first event list (paced feed / bootstrap).
+ * @param {object[]} events
+ * @param {{ home: number, away: number } | null | undefined} [fallbackScore]
+ * @param {{ home: number, away: number } | null | undefined} [fallbackPenaltyScore]
+ */
+export function getDisplayScoresFromEvents(events, fallbackScore, fallbackPenaltyScore) {
+  let score = null
+  let penaltyScore = null
+
+  // Newest-first: first scoring event in the list is the latest authoritative snapshot.
+  for (const e of events || []) {
+    if (!score && canApplyMatchScoreFromEvent(e)) score = e.score
+    if (!penaltyScore && canApplyPenaltyScoreFromEvent(e)) penaltyScore = e.penaltyScore
+    if (score && penaltyScore) break
+  }
+
+  return {
+    score: score ?? fallbackScore ?? null,
+    penaltyScore: penaltyScore ?? fallbackPenaltyScore ?? null,
+  }
 }

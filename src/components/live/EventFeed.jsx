@@ -1,6 +1,15 @@
 import { useRef, useEffect, useMemo } from 'react'
 import { getEventIcon, formatMatchTime } from '../../utils/formatters'
-import { compareLiveEventsDesc, resolveEventTeam } from '../../utils/liveEventModel'
+import {
+  compareLiveEventsDesc,
+  resolveEventTeam,
+  resolveOpponentTeam,
+  reconcileEventTeamWithDescription,
+  POSSESSION_FLOW_EVENT_TYPES,
+  BREAKDOWN_EVENT_TYPES,
+  isMisleadingBreakdownDescription,
+  buildBreakdownSubtitle,
+} from '../../utils/liveEventModel'
 
 /** Resolve event kind for display (unified `type` or legacy `event_type`). */
 function eventKind(event) {
@@ -12,6 +21,8 @@ export default function EventFeed({
   homeTeam,
   awayTeam,
   autoScroll = true,
+  /** Taller scroll area on xl+ (live match detail side panel). */
+  desktopTall = false,
   /** 'home' | 'away' names or team objects with .name */
   homeTeamName: homeTeamNameProp,
   awayTeamName: awayTeamNameProp,
@@ -70,10 +81,12 @@ export default function EventFeed({
     )
   }
 
+  const scrollHeightClass = desktopTall ? 'max-h-96 xl:max-h-[70vh] xl:min-h-[280px]' : 'max-h-96'
+
   return (
     <div
       ref={feedRef}
-      className="space-y-2 max-h-96 overflow-y-auto pr-2 scroll-smooth"
+      className={`space-y-2 overflow-y-auto pr-2 scroll-smooth min-h-0 ${scrollHeightClass}`}
     >
       {sortedEvents.map((event, index) => (
         <EventItem
@@ -90,8 +103,16 @@ export default function EventFeed({
 
 function EventItem({ event, homeTeam, awayTeam, isLatest }) {
   const kind = eventKind(event)
-  const { team: resolvedTeam, side } = resolveEventTeam(event, { homeTeam, awayTeam })
+  const teamCtx = { homeTeam, awayTeam }
+  const rawDescription = event.description || null
+  const { team: resolvedTeam, side } = reconcileEventTeamWithDescription(
+    event,
+    teamCtx,
+    rawDescription,
+  )
   const teamLabel = resolvedTeam?.name || null
+  const opponentLabel = resolveOpponentTeam(event, teamCtx, { team: resolvedTeam, side }).team
+    ?.name
   const isHomeTeam = side === 'home'
   const isMatchStateEvent = NEUTRAL_EVENT_TEMPLATES[kind] != null
   const isNeutral = !teamLabel || isMatchStateEvent
@@ -100,10 +121,44 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
     event.displayName || event.player_name || event.player?.name || null
   const assistName =
     event.assistName || event.assist_name || event.assist?.name || null
-  const description = sanitizeEventDescription(event.description, {
-    teamName: teamLabel,
-    playerName,
-  })
+
+  const descriptionNamesTeam = (text, name) => {
+    if (!text || !name) return false
+    if (text.includes(name)) return true
+    const token = name.split(/\s+/)[0]
+    return token.length >= 3 && text.includes(token)
+  }
+
+  const useDescriptionAsHeadline =
+    rawDescription &&
+    POSSESSION_FLOW_EVENT_TYPES.has(kind) &&
+    teamLabel &&
+    descriptionNamesTeam(rawDescription, teamLabel) &&
+    !BREAKDOWN_EVENT_TYPES.has(kind)
+
+  let description = null
+  if (BREAKDOWN_EVENT_TYPES.has(kind)) {
+    if (isMisleadingBreakdownDescription(rawDescription)) {
+      description = buildBreakdownSubtitle(teamLabel, opponentLabel)
+    } else {
+      description =
+        sanitizeEventDescription(rawDescription, { teamName: teamLabel, playerName }) ||
+        buildBreakdownSubtitle(teamLabel, opponentLabel)
+    }
+  } else if (!useDescriptionAsHeadline) {
+    description = sanitizeEventDescription(rawDescription, {
+      teamName: teamLabel,
+      playerName,
+    })
+    if (
+      description &&
+      teamLabel &&
+      POSSESSION_FLOW_EVENT_TYPES.has(kind) &&
+      !descriptionNamesTeam(description, teamLabel)
+    ) {
+      description = null
+    }
+  }
 
   const isGoal =
     kind === 'goal' ||
@@ -193,19 +248,24 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
                     : 'text-text'
           }`}
         >
-          {(() => {
-            const { pre, team, post } = formatEventHeadline(kind, teamLabel)
-            const teamColor = isHomeTeam ? 'text-primary' : 'text-blue-400'
-            return (
-              <>
-                {pre}
-                {team && (
-                  <span className={teamColor}>{team}</span>
-                )}
-                {post}
-              </>
-            )
-          })()}
+          {useDescriptionAsHeadline ? (
+            <span>
+              {sanitizeEventDescription(rawDescription, { teamName: teamLabel, playerName }) ||
+                rawDescription}
+            </span>
+          ) : (
+            (() => {
+              const { pre, team, post } = formatEventHeadline(kind, teamLabel)
+              const teamColor = isHomeTeam ? 'text-primary' : 'text-blue-400'
+              return (
+                <>
+                  {pre}
+                  {team && <span className={teamColor}>{team}</span>}
+                  {post}
+                </>
+              )
+            })()
+          )}
         </p>
         {description && (
           <p className="text-sm text-text-muted line-clamp-2">{description}</p>

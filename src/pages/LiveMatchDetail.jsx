@@ -15,6 +15,7 @@ import {
   canApplyMatchScoreFromEvent,
   canApplyPenaltyScoreFromEvent,
   GOAL_TOAST_EVENT_TYPES,
+  getDisplayScoresFromEvents,
 } from '../utils/liveEventModel'
 import { getEventDedupeKey } from '../hooks/usePacedEventReveal'
 
@@ -33,14 +34,14 @@ const MATCH_STATE_LABELS = {
   FINISHED: 'Full Time',
 }
 
-function applyLiveEventToMatch(match, event) {
+function applyLiveEventToMatch(match, event, { includeScore = false } = {}) {
   if (!match) return match
 
   const updates = {}
   if (event.minute != null) updates.minute = event.minute
   if (event.second != null) updates.second = event.second
-  if (canApplyMatchScoreFromEvent(event)) updates.score = event.score
-  if (canApplyPenaltyScoreFromEvent(event)) updates.penaltyScore = event.penaltyScore
+  if (includeScore && canApplyMatchScoreFromEvent(event)) updates.score = event.score
+  if (includeScore && canApplyPenaltyScoreFromEvent(event)) updates.penaltyScore = event.penaltyScore
 
   return Object.keys(updates).length > 0 ? { ...match, ...updates } : match
 }
@@ -82,6 +83,10 @@ export default function LiveMatchDetail() {
 
   const handleEventRevealed = useCallback(
     (event) => {
+      if (canApplyMatchScoreFromEvent(event) || canApplyPenaltyScoreFromEvent(event)) {
+        setMatch((prev) => applyLiveEventToMatch(prev, event, { includeScore: true }))
+      }
+
       if (!GOAL_TOAST_EVENT_TYPES.has(event.type)) return
       const key = getEventDedupeKey(event)
       if (goalToastSeenRef.current.has(key)) return
@@ -179,7 +184,15 @@ export default function LiveMatchDetail() {
         addToast('⏱️ Full Time', 'info', 4000)
       } else if (event.type === 'match_end' || event.type === 'shootout_end') {
         setMatch((prev) =>
-          prev ? { ...prev, state: 'FINISHED', isFinished: true, score: event.score || prev.score } : prev
+          prev
+            ? {
+                ...prev,
+                state: 'FINISHED',
+                isFinished: true,
+                score: event.score || prev.score,
+                penaltyScore: event.penaltyScore || prev.penaltyScore,
+              }
+            : prev
         )
         addToast('🏆 Match complete', 'info', 5000)
       } else if (event.type === 'match_start') {
@@ -313,7 +326,13 @@ export default function LiveMatchDetail() {
         const data = await liveApi.getMatch(fixtureId)
         if (cancelled || !data) return
 
-        setMatch((prev) => applyMatchSnapshot(prev, data))
+        setMatch((prev) => {
+          if (!prev) return data
+          const isActiveLive = prev.state !== 'FINISHED' && prev.isFinished !== true
+          if (!isActiveLive) return applyMatchSnapshot(prev, data)
+          const { score: _s, penaltyScore: _p, ...rest } = data
+          return applyMatchSnapshot(prev, rest)
+        })
         useLiveStore.getState().updateMatch(fixtureId, data)
       } catch (err) {
         console.error('[LiveMatchDetail] Failed to poll match:', err)
@@ -340,6 +359,13 @@ export default function LiveMatchDetail() {
 
   const stateLabel = match?.state ? MATCH_STATE_LABELS[match.state] : 'Loading...'
 
+  const { score: displayScore, penaltyScore: displayPenaltyScore } = useMemo(() => {
+    if (match?.state === 'FINISHED' || match?.isFinished) {
+      return { score: match?.score, penaltyScore: match?.penaltyScore }
+    }
+    return getDisplayScoresFromEvents(visibleEvents, match?.score, match?.penaltyScore)
+  }, [visibleEvents, match?.score, match?.penaltyScore, match?.state, match?.isFinished])
+
   if (loading && !match) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-8">
@@ -365,7 +391,7 @@ export default function LiveMatchDetail() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="max-w-4xl xl:max-w-[min(100%,1280px)] mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <div className="flex items-center justify-between mb-6">
         <Link
           to="/live"
@@ -385,12 +411,13 @@ export default function LiveMatchDetail() {
         />
       </div>
 
-      <div
-        className={`
-        rounded-2xl bg-card border p-6 mb-6
-        ${isLive ? 'border-primary/50 shadow-xl shadow-primary/20' : 'border-border'}
-      `}
-      >
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(380px,520px)_minmax(480px,1fr)] gap-4 xl:gap-6 xl:items-start">
+        <div
+          className={`
+          rounded-2xl bg-card border p-6 min-w-0
+          ${isLive ? 'border-primary/50 shadow-xl shadow-primary/20' : 'border-border'}
+        `}
+        >
         <div className="flex items-center justify-center mb-4">
           <span
             className={`
@@ -420,7 +447,7 @@ export default function LiveMatchDetail() {
             </div>
             <h2
               className={`text-lg font-bold truncate px-2 ${
-                match?.score?.home > match?.score?.away ? 'text-primary' : 'text-text'
+                (displayScore?.home ?? 0) > (displayScore?.away ?? 0) ? 'text-primary' : 'text-text'
               }`}
             >
               {match?.homeTeam?.name || 'Home Team'}
@@ -429,14 +456,20 @@ export default function LiveMatchDetail() {
 
           <div className="text-center px-4">
             <div className="flex items-center gap-4">
-              <ScoreDigit value={match?.score?.home ?? 0} isWinning={match?.score?.home > match?.score?.away} />
+              <ScoreDigit
+                value={displayScore?.home ?? 0}
+                isWinning={(displayScore?.home ?? 0) > (displayScore?.away ?? 0)}
+              />
               <span className="text-3xl text-text-muted">-</span>
-              <ScoreDigit value={match?.score?.away ?? 0} isWinning={match?.score?.away > match?.score?.home} />
+              <ScoreDigit
+                value={displayScore?.away ?? 0}
+                isWinning={(displayScore?.away ?? 0) > (displayScore?.home ?? 0)}
+              />
             </div>
 
-            {(match?.penaltyScore?.home > 0 || match?.penaltyScore?.away > 0) && (
+            {(displayPenaltyScore?.home > 0 || displayPenaltyScore?.away > 0) && (
               <p className="text-sm text-text-muted mt-2">
-                ({match.penaltyScore.home} - {match.penaltyScore.away} pens)
+                ({displayPenaltyScore.home} - {displayPenaltyScore.away} pens)
               </p>
             )}
           </div>
@@ -447,7 +480,7 @@ export default function LiveMatchDetail() {
             </div>
             <h2
               className={`text-lg font-bold truncate px-2 ${
-                match?.score?.away > match?.score?.home ? 'text-primary' : 'text-text'
+                (displayScore?.away ?? 0) > (displayScore?.home ?? 0) ? 'text-primary' : 'text-text'
               }`}
             >
               {match?.awayTeam?.name || 'Away Team'}
@@ -471,25 +504,27 @@ export default function LiveMatchDetail() {
             </div>
           </div>
         )}
-      </div>
-
-      <div className="card">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-bold text-text">Match Events</h3>
-          {isLive && (
-            <span className="flex items-center gap-2 text-sm text-text-muted">
-              <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-              Live updates
-            </span>
-          )}
         </div>
 
-        <EventFeed
-          events={visibleEvents}
-          homeTeam={match?.homeTeam}
-          awayTeam={match?.awayTeam}
-          autoScroll={isLive}
-        />
+        <div className="card min-w-0">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-bold text-text">Match Events</h3>
+            {isLive && (
+              <span className="flex items-center gap-2 text-sm text-text-muted">
+                <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                Live updates
+              </span>
+            )}
+          </div>
+
+          <EventFeed
+            events={visibleEvents}
+            homeTeam={match?.homeTeam}
+            awayTeam={match?.awayTeam}
+            autoScroll={isLive}
+            desktopTall
+          />
+        </div>
       </div>
 
       {match?.state === 'FINISHED' && (

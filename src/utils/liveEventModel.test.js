@@ -6,6 +6,13 @@ import {
   LIVE_SSE_EVENT_TYPES,
   canApplyMatchScoreFromEvent,
   canApplyPenaltyScoreFromEvent,
+  resolveEventTeam,
+  resolveOpponentTeam,
+  reconcileEventTeamWithDescription,
+  findTeamSideInText,
+  isMisleadingBreakdownDescription,
+  buildBreakdownSubtitle,
+  getDisplayScoresFromEvents,
 } from './liveEventModel'
 
 describe('normalizeLiveEvent', () => {
@@ -262,5 +269,118 @@ describe('normalizeLiveEvent pacing', () => {
     expect(n.pacing).toEqual({ delay_ms: 0, hold_ms: 500 })
     expect(n.chain_type).toBeNull()
     expect(n.chainType).toBeNull()
+  })
+})
+
+describe('resolveEventTeam', () => {
+  const home = { id: 1, name: 'Doge City' }
+  const away = { id: 2, name: 'Outside' }
+  const ctx = { homeTeam: home, awayTeam: away }
+
+  it('prefers explicit teamName over mismatched teamId', () => {
+    const r = resolveEventTeam(
+      { type: 'possession', teamName: 'Doge City', teamId: 2 },
+      ctx
+    )
+    expect(r.team?.name).toBe('Doge City')
+    expect(r.side).toBe('home')
+  })
+
+  it('resolves opponent from side', () => {
+    const resolved = resolveEventTeam({ type: 'attack_breakdown', side: 'home' }, ctx)
+    const opp = resolveOpponentTeam({ type: 'attack_breakdown', side: 'home' }, ctx, resolved)
+    expect(opp.team?.name).toBe('Outside')
+    expect(opp.side).toBe('away')
+  })
+
+  it('returns null team safely when context missing', () => {
+    expect(resolveEventTeam({ type: 'possession' }, {}).team).toBeNull()
+  })
+})
+
+describe('reconcileEventTeamWithDescription', () => {
+  const home = { id: 1, name: 'Doge City' }
+  const away = { id: 2, name: 'Outside' }
+  const ctx = { homeTeam: home, awayTeam: away }
+
+  it('aligns possession team with backend description when teamId disagrees', () => {
+    const r = reconcileEventTeamWithDescription(
+      { type: 'possession', teamId: 2 },
+      ctx,
+      'Doge City are keeping the ball'
+    )
+    expect(r.team?.name).toBe('Doge City')
+    expect(r.side).toBe('home')
+  })
+
+  it('aligns build-up team when description uses abbreviated name', () => {
+    const r = reconcileEventTeamWithDescription(
+      { type: 'build_up', teamId: 2 },
+      ctx,
+      'Doge build up play down the flank'
+    )
+    expect(r.team?.name).toBe('Doge City')
+    expect(r.side).toBe('home')
+  })
+
+  it('findTeamSideInText picks unambiguous team', () => {
+    expect(findTeamSideInText('Doge City build up play down the flank', 'Doge City', 'Outside')).toBe(
+      'home'
+    )
+    expect(findTeamSideInText('Doge build up play down the flank', 'Doge City', 'Outside')).toBe('home')
+  })
+})
+
+describe('breakdown copy helpers', () => {
+  it('detects misleading shut-down-by-attack phrasing', () => {
+    expect(isMisleadingBreakdownDescription("Doge City shut down by Outside's attack")).toBe(true)
+    expect(isMisleadingBreakdownDescription("Outside's defence wins it back")).toBe(false)
+  })
+
+  it('builds defence-oriented subtitle', () => {
+    expect(buildBreakdownSubtitle('Doge City', 'Outside')).toBe(
+      "Outside's defence shuts them down"
+    )
+  })
+})
+
+describe('getDisplayScoresFromEvents', () => {
+  it('uses latest revealed scoring event, not fallback ahead of reveal', () => {
+    const fallback = { home: 2, away: 1 }
+    const events = [
+      { type: 'goal', seq: 10, score: { home: 2, away: 1 } },
+      { type: 'possession', seq: 9, score: { home: 2, away: 1 } },
+    ]
+    const { score } = getDisplayScoresFromEvents(events, fallback)
+    expect(score).toEqual({ home: 2, away: 1 })
+  })
+
+  it('falls back when no scoring events are visible yet', () => {
+    const fallback = { home: 1, away: 0 }
+    const { score } = getDisplayScoresFromEvents(
+      [{ type: 'possession', seq: 5, score: { home: 2, away: 1 } }],
+      fallback
+    )
+    expect(score).toEqual({ home: 1, away: 0 })
+  })
+
+  it('ignores build-up score snapshots in fallback path', () => {
+    const { score } = getDisplayScoresFromEvents(
+      [{ type: 'goal_build_up', seq: 8, score: { home: 2, away: 0 } }],
+      { home: 1, away: 0 }
+    )
+    expect(score).toEqual({ home: 1, away: 0 })
+  })
+
+  it('prefers latest revealed goal score over stale bootstrap fallback', () => {
+    const { score } = getDisplayScoresFromEvents(
+      [
+        { type: 'goal', seq: 30, score: { home: 3, away: 0 } },
+        { type: 'goal', seq: 20, score: { home: 2, away: 0 } },
+        { type: 'possession', seq: 10 },
+      ],
+      { home: 1, away: 0 }
+    )
+    expect(score).toEqual({ home: 3, away: 0 })
   })
 })
