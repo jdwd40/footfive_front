@@ -12,7 +12,11 @@ import {
   findTeamSideInText,
   isMisleadingBreakdownDescription,
   buildBreakdownSubtitle,
+  resolveBreakdownParties,
+  resolveEventDisplayTeams,
+  parseAttackBreakdownDescription,
   getDisplayScoresFromEvents,
+  getLatestClockFromEvents,
 } from './liveEventModel'
 
 describe('normalizeLiveEvent', () => {
@@ -337,10 +341,87 @@ describe('breakdown copy helpers', () => {
     expect(isMisleadingBreakdownDescription("Outside's defence wins it back")).toBe(false)
   })
 
-  it('builds defence-oriented subtitle', () => {
-    expect(buildBreakdownSubtitle('Doge City', 'Outside')).toBe(
-      "Outside's defence shuts them down"
+  it('parses attack breakdown description into defending and attacking names', () => {
+    expect(parseAttackBreakdownDescription("Green Bay shut down Tripper's attack.")).toEqual({
+      defendingName: 'Green Bay',
+      attackingName: 'Tripper',
+    })
+  })
+
+  it('builds attack breakdown subtitle with correct teams', () => {
+    expect(buildBreakdownSubtitle('Tripper', 'Green Bay', 'attack_breakdown')).toBe(
+      "Green Bay shut down Tripper's attack"
     )
+  })
+
+  it('builds counter breakdown subtitle with countering team', () => {
+    expect(buildBreakdownSubtitle('Tripper', 'Green Bay', 'counter_breakdown')).toBe(
+      "Green Bay recover and snuff out Tripper's counter"
+    )
+  })
+})
+
+describe('resolveBreakdownParties', () => {
+  const home = { id: 1, name: 'Green Bay' }
+  const away = { id: 2, name: 'Tripper' }
+  const ctx = { homeTeam: home, awayTeam: away }
+
+  it('attack_breakdown: possession is attacker, not defender teamId', () => {
+    const parties = resolveBreakdownParties(
+      {
+        type: 'attack_breakdown',
+        teamId: 1,
+        description: "Green Bay shut down Tripper's attack.",
+      },
+      ctx
+    )
+    expect(parties.possessionTeam?.name).toBe('Tripper')
+    expect(parties.possessionSide).toBe('away')
+    expect(parties.defendingTeam?.name).toBe('Green Bay')
+    expect(parties.defendingSide).toBe('home')
+  })
+
+  it('counter_breakdown: possession is countering team, teamId is recovering defender', () => {
+    const parties = resolveBreakdownParties(
+      {
+        type: 'counter_breakdown',
+        teamId: 1,
+        description: 'Green Bay recover and snuff out the counter.',
+      },
+      ctx
+    )
+    expect(parties.possessionTeam?.name).toBe('Tripper')
+    expect(parties.defendingTeam?.name).toBe('Green Bay')
+  })
+
+  it('resolveEventDisplayTeams exposes possession for breakdown headline', () => {
+    const display = resolveEventDisplayTeams(
+      {
+        type: 'attack_breakdown',
+        teamId: 1,
+        description: "Green Bay shut down Tripper's attack.",
+      },
+      ctx
+    )
+    expect(display.isBreakdown).toBe(true)
+    expect(display.possession.team?.name).toBe('Tripper')
+    expect(display.opponent.team?.name).toBe('Green Bay')
+  })
+})
+
+describe('getLatestClockFromEvents', () => {
+  it('returns latest minute/second across visible events', () => {
+    expect(
+      getLatestClockFromEvents([
+        { minute: 44, second: 10 },
+        { minute: 45, second: 5 },
+        { minute: 44, second: 55 },
+      ])
+    ).toEqual({ minute: 45, second: 5 })
+  })
+
+  it('returns zero when no events', () => {
+    expect(getLatestClockFromEvents([])).toEqual({ minute: 0, second: 0 })
   })
 })
 

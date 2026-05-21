@@ -16,6 +16,7 @@ import {
   canApplyPenaltyScoreFromEvent,
   GOAL_TOAST_EVENT_TYPES,
   getDisplayScoresFromEvents,
+  getLatestClockFromEvents,
 } from '../utils/liveEventModel'
 import { getEventDedupeKey } from '../hooks/usePacedEventReveal'
 
@@ -83,9 +84,7 @@ export default function LiveMatchDetail() {
 
   const handleEventRevealed = useCallback(
     (event) => {
-      if (canApplyMatchScoreFromEvent(event) || canApplyPenaltyScoreFromEvent(event)) {
-        setMatch((prev) => applyLiveEventToMatch(prev, event, { includeScore: true }))
-      }
+      setMatch((prev) => applyLiveEventToMatch(prev, event, { includeScore: true }))
 
       if (!GOAL_TOAST_EVENT_TYPES.has(event.type)) return
       const key = getEventDedupeKey(event)
@@ -102,7 +101,7 @@ export default function LiveMatchDetail() {
     setVisibleImmediately,
     appendVisibleImmediately,
     reset: resetVisibleEvents,
-  } = usePacedEventReveal({ defaultDelayMs: 1000, onEventRevealed: handleEventRevealed })
+  } = usePacedEventReveal({ onEventRevealed: handleEventRevealed })
 
   const catchUpBufferRef = useRef([])
   const catchUpTimerRef = useRef(null)
@@ -147,8 +146,6 @@ export default function LiveMatchDetail() {
 
       useLiveStore.getState().handleEvent(event)
 
-      setMatch((prev) => applyLiveEventToMatch(prev, event))
-
       setEvents((prev) => {
         if (event.seq > 0 && prev.some((e) => e.seq === event.seq)) return prev
         return sortLiveEventsDesc(dedupeLiveEventsBySeq([...prev, event]))
@@ -184,15 +181,7 @@ export default function LiveMatchDetail() {
         addToast('⏱️ Full Time', 'info', 4000)
       } else if (event.type === 'match_end' || event.type === 'shootout_end') {
         setMatch((prev) =>
-          prev
-            ? {
-                ...prev,
-                state: 'FINISHED',
-                isFinished: true,
-                score: event.score || prev.score,
-                penaltyScore: event.penaltyScore || prev.penaltyScore,
-              }
-            : prev
+          prev ? { ...prev, state: 'FINISHED', isFinished: true } : prev
         )
         addToast('🏆 Match complete', 'info', 5000)
       } else if (event.type === 'match_start') {
@@ -330,7 +319,13 @@ export default function LiveMatchDetail() {
           if (!prev) return data
           const isActiveLive = prev.state !== 'FINISHED' && prev.isFinished !== true
           if (!isActiveLive) return applyMatchSnapshot(prev, data)
-          const { score: _s, penaltyScore: _p, ...rest } = data
+          const {
+            score: _s,
+            penaltyScore: _p,
+            minute: _m,
+            second: _sec,
+            ...rest
+          } = data
           return applyMatchSnapshot(prev, rest)
         })
         useLiveStore.getState().updateMatch(fixtureId, data)
@@ -359,12 +354,20 @@ export default function LiveMatchDetail() {
 
   const stateLabel = match?.state ? MATCH_STATE_LABELS[match.state] : 'Loading...'
 
+  const displayClock = useMemo(
+    () => getLatestClockFromEvents(visibleEvents),
+    [visibleEvents]
+  )
+
   const { score: displayScore, penaltyScore: displayPenaltyScore } = useMemo(() => {
     if (match?.state === 'FINISHED' || match?.isFinished) {
       return { score: match?.score, penaltyScore: match?.penaltyScore }
     }
+    if (isLive) {
+      return getDisplayScoresFromEvents(visibleEvents, null, null)
+    }
     return getDisplayScoresFromEvents(visibleEvents, match?.score, match?.penaltyScore)
-  }, [visibleEvents, match?.score, match?.penaltyScore, match?.state, match?.isFinished])
+  }, [visibleEvents, match?.score, match?.penaltyScore, match?.state, match?.isFinished, isLive])
 
   if (loading && !match) {
     return (
@@ -432,12 +435,16 @@ export default function LiveMatchDetail() {
           `}
           >
             {isLive && <span className="w-2 h-2 rounded-full bg-current animate-pulse" />}
-            {match?.minute !== undefined && isLive ? `${match.minute}' - ${stateLabel}` : stateLabel}
+            {isLive ? `${displayClock.minute}' - ${stateLabel}` : stateLabel}
           </span>
         </div>
 
         <div className="mb-6">
-          <MatchClock events={events} isLive={isLive} matchMinute={match?.minute} />
+          <MatchClock
+            events={visibleEvents}
+            isLive={isLive}
+            matchMinute={isLive ? undefined : match?.minute}
+          />
         </div>
 
         <div className="flex items-center justify-between gap-4">

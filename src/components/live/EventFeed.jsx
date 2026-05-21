@@ -2,12 +2,10 @@ import { useRef, useEffect, useMemo } from 'react'
 import { getEventIcon, formatMatchTime } from '../../utils/formatters'
 import {
   compareLiveEventsDesc,
-  resolveEventTeam,
-  resolveOpponentTeam,
-  reconcileEventTeamWithDescription,
+  resolveEventDisplayTeams,
   POSSESSION_FLOW_EVENT_TYPES,
   BREAKDOWN_EVENT_TYPES,
-  isMisleadingBreakdownDescription,
+  POSSESSION_INDICATOR_EVENT_TYPES,
   buildBreakdownSubtitle,
 } from '../../utils/liveEventModel'
 
@@ -105,17 +103,17 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
   const kind = eventKind(event)
   const teamCtx = { homeTeam, awayTeam }
   const rawDescription = event.description || null
-  const { team: resolvedTeam, side } = reconcileEventTeamWithDescription(
+  const { possession, opponent, isBreakdown } = resolveEventDisplayTeams(
     event,
     teamCtx,
     rawDescription,
   )
-  const teamLabel = resolvedTeam?.name || null
-  const opponentLabel = resolveOpponentTeam(event, teamCtx, { team: resolvedTeam, side }).team
-    ?.name
-  const isHomeTeam = side === 'home'
+  const teamLabel = possession.team?.name || null
+  const opponentLabel = opponent.team?.name || null
+  const isHomeTeam = possession.side === 'home'
   const isMatchStateEvent = NEUTRAL_EVENT_TEMPLATES[kind] != null
   const isNeutral = !teamLabel || isMatchStateEvent
+  const showPossessionIndicator = teamLabel && POSSESSION_INDICATOR_EVENT_TYPES.has(kind)
 
   const playerName =
     event.displayName || event.player_name || event.player?.name || null
@@ -138,13 +136,9 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
 
   let description = null
   if (BREAKDOWN_EVENT_TYPES.has(kind)) {
-    if (isMisleadingBreakdownDescription(rawDescription)) {
-      description = buildBreakdownSubtitle(teamLabel, opponentLabel)
-    } else {
-      description =
-        sanitizeEventDescription(rawDescription, { teamName: teamLabel, playerName }) ||
-        buildBreakdownSubtitle(teamLabel, opponentLabel)
-    }
+    description =
+      sanitizeEventDescription(rawDescription, { teamName: teamLabel, playerName }) ||
+      buildBreakdownSubtitle(teamLabel, opponentLabel, kind)
   } else if (!useDescriptionAsHeadline) {
     description = sanitizeEventDescription(rawDescription, {
       teamName: teamLabel,
@@ -159,6 +153,12 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
       description = null
     }
   }
+
+  const possessionIndicatorLabel = isBreakdown
+    ? kind === 'counter_breakdown'
+      ? 'Counter'
+      : 'Lost ball'
+    : 'In possession'
 
   const isGoal =
     kind === 'goal' ||
@@ -235,6 +235,21 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
       </div>
 
       <div className="flex-1 min-w-0">
+        {showPossessionIndicator && (
+          <div className="mb-1.5">
+            <span
+              className={`
+                inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wide
+                ${isHomeTeam ? 'bg-primary/20 text-primary border border-primary/30' : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'}
+              `}
+            >
+              <span aria-hidden>⚽</span>
+              <span>{possessionIndicatorLabel}</span>
+              <span className="normal-case tracking-normal">·</span>
+              <span className="normal-case tracking-normal">{teamLabel}</span>
+            </span>
+          </div>
+        )}
         <p
           className={`font-semibold ${
             isGoal
@@ -381,7 +396,7 @@ const TEAM_EVENT_TEMPLATES = {
   midfield_battle: 'Midfield battle — {team}',
   goal_build_up: '{team} build the attack',
   attack_breakdown: '{team} lose the ball',
-  counter_breakdown: 'Counter breaks down — {team}',
+  counter_breakdown: '{team} counter breaks down',
   penalty_walkup: '{team} walk to the spot…',
   penalty_run_up: '{team} at the run-up…',
   shootout_walkup: '{team} step up in the shootout…',

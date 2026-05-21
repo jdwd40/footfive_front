@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { createPacedRevealQueue } from './pacedRevealQueue'
 
-export { getEventDedupeKey, getEventPacingDelayMs } from './pacedRevealQueue'
+export { getEventDedupeKey, getReadableEventDelay, getEventPacingDelayMs } from './pacedRevealQueue'
 
 /**
  * @param {object} options
@@ -9,7 +9,7 @@ export { getEventDedupeKey, getEventPacingDelayMs } from './pacedRevealQueue'
  * @param {number} [options.defaultDelayMs]
  * @param {(event: object) => void} [options.onEventRevealed] Fired when paced enqueue reveals an event (not bootstrap/catch-up).
  */
-export function usePacedEventReveal({ enabled = true, defaultDelayMs = 1000, onEventRevealed } = {}) {
+export function usePacedEventReveal({ enabled = true, defaultDelayMs = 3500, onEventRevealed } = {}) {
   const [visibleEvents, setVisibleEvents] = useState([])
   const queueRef = useRef(null)
   const onEventRevealedRef = useRef(onEventRevealed)

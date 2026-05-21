@@ -334,6 +334,19 @@ export const POSSESSION_FLOW_EVENT_TYPES = new Set([
 /** Events where a defending opponent may appear in copy. */
 export const BREAKDOWN_EVENT_TYPES = new Set(['attack_breakdown', 'counter_breakdown'])
 
+/** Backend teamId is the defending side; possession belongs to the opponent. */
+export const DEFENSIVE_STAND_EVENT_TYPES = BREAKDOWN_EVENT_TYPES
+
+/** Event types where the UI should show who has (or just had) the ball. */
+export const POSSESSION_INDICATOR_EVENT_TYPES = new Set([
+  ...POSSESSION_FLOW_EVENT_TYPES,
+  'counter_attack',
+  'breakaway',
+  'chance_created',
+  'big_chance',
+  ...BREAKDOWN_EVENT_TYPES,
+])
+
 function teamNameAppearsInText(name, text) {
   if (!name || !text) return false
   if (text.includes(name)) return true
@@ -451,6 +464,157 @@ export function resolveOpponentTeam(event, ctx = {}, resolved = null) {
 /**
  * Prefer backend description's named team for flow events when it disagrees with id/side resolution.
  */
+/**
+ * Match a name fragment from backend copy to home/away (handles abbreviations).
+ * @returns {{ team: object, side: 'home' | 'away' } | null}
+ */
+export function matchTeamByNameFragment(fragment, home, away) {
+  if (!fragment) return null
+  const frag = fragment.trim().toLowerCase()
+  const candidates = [
+    { team: home, side: 'home' },
+    { team: away, side: 'away' },
+  ].filter((c) => c.team?.name)
+
+  for (const { team, side } of candidates) {
+    const full = team.name.toLowerCase()
+    const token = full.split(/\s+/)[0]
+    if (full === frag || full.startsWith(frag) || frag.startsWith(token) || token === frag) {
+      return { team, side }
+    }
+  }
+  return null
+}
+
+/**
+ * Parse attack_breakdown description: "{defender} shut down {attacker}'s attack".
+ */
+export function parseAttackBreakdownDescription(description) {
+  if (!description) return null
+  const m = description.match(/^(.+?)\s+shut\s+down\s+(.+?)(?:'s|’s)\s+attack/i)
+  if (!m) return null
+  return { defendingName: m[1].trim(), attackingName: m[2].trim() }
+}
+
+/**
+ * Parse counter_breakdown description: "{defender} recover and snuff out the counter".
+ */
+export function parseCounterBreakdownDescription(description) {
+  if (!description) return null
+  const m = description.match(/^(.+?)\s+recover\s+and\s+snuff\s+out\s+(?:the\s+)?counter/i)
+  if (!m) return null
+  return { defendingName: m[1].trim() }
+}
+
+/**
+ * Breakdown events: teamId = defending team; possession = attacking/counter side.
+ * @returns {{
+ *   possessionTeam: object | null,
+ *   possessionSide: 'home' | 'away' | null,
+ *   defendingTeam: object | null,
+ *   defendingSide: 'home' | 'away' | null,
+ * }}
+ */
+export function resolveBreakdownParties(event, ctx = {}, description = null) {
+  const kind = event?.type || event?.event_type || ''
+  const desc = description ?? event?.description ?? null
+  const toTeamObj = (raw, fallbackId) => {
+    if (raw == null) return null
+    if (typeof raw === 'string') return { name: raw, id: fallbackId ?? null }
+    if (typeof raw === 'object') {
+      if (fallbackId != null && raw.id == null) return { ...raw, id: fallbackId }
+      return raw
+    }
+    return null
+  }
+  const home = toTeamObj(
+    ctx.homeTeam ?? event?.homeTeam ?? event?.home_team ?? null,
+    ctx.homeTeamId ?? null,
+  )
+  const away = toTeamObj(
+    ctx.awayTeam ?? event?.awayTeam ?? event?.away_team ?? null,
+    ctx.awayTeamId ?? null,
+  )
+
+  const defendingResolved = resolveEventTeam(event, ctx)
+  const attackingResolved = resolveOpponentTeam(event, ctx, defendingResolved)
+
+  if (kind === 'attack_breakdown') {
+    const parsed = parseAttackBreakdownDescription(desc)
+    if (parsed) {
+      const defending = matchTeamByNameFragment(parsed.defendingName, home, away)
+      const possession = matchTeamByNameFragment(parsed.attackingName, home, away)
+      if (defending && possession) {
+        return {
+          possessionTeam: possession.team,
+          possessionSide: possession.side,
+          defendingTeam: defending.team,
+          defendingSide: defending.side,
+        }
+      }
+    }
+  }
+
+  if (kind === 'counter_breakdown') {
+    const parsed = parseCounterBreakdownDescription(desc)
+    if (parsed) {
+      const defending = matchTeamByNameFragment(parsed.defendingName, home, away)
+      if (defending) {
+        const possession =
+          defending.side === 'home'
+            ? away
+              ? { team: away, side: 'away' }
+              : null
+            : home
+              ? { team: home, side: 'home' }
+              : null
+        if (possession) {
+          return {
+            possessionTeam: possession.team,
+            possessionSide: possession.side,
+            defendingTeam: defending.team,
+            defendingSide: defending.side,
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    possessionTeam: attackingResolved.team,
+    possessionSide: attackingResolved.side,
+    defendingTeam: defendingResolved.team,
+    defendingSide: defendingResolved.side,
+  }
+}
+
+/**
+ * Unified display resolution: possession team + opponent for feed rendering.
+ */
+export function resolveEventDisplayTeams(event, ctx = {}, description = null) {
+  const kind = event?.type || event?.event_type || ''
+  const desc = description ?? event?.description ?? null
+
+  if (BREAKDOWN_EVENT_TYPES.has(kind)) {
+    const parties = resolveBreakdownParties(event, ctx, desc)
+    return {
+      possession: {
+        team: parties.possessionTeam,
+        side: parties.possessionSide,
+      },
+      opponent: {
+        team: parties.defendingTeam,
+        side: parties.defendingSide,
+      },
+      isBreakdown: true,
+    }
+  }
+
+  const possession = reconcileEventTeamWithDescription(event, ctx, desc)
+  const opponent = resolveOpponentTeam(event, ctx, possession)
+  return { possession, opponent, isBreakdown: false }
+}
+
 export function reconcileEventTeamWithDescription(event, ctx, description) {
   const resolved = resolveEventTeam(event, ctx)
   if (!description) return resolved
@@ -463,7 +627,7 @@ export function reconcileEventTeamWithDescription(event, ctx, description) {
   if (!descSide) return resolved
 
   const kind = event?.type || event?.event_type || ''
-  const flowEvent = POSSESSION_FLOW_EVENT_TYPES.has(kind) || BREAKDOWN_EVENT_TYPES.has(kind)
+  const flowEvent = POSSESSION_FLOW_EVENT_TYPES.has(kind)
   if (!flowEvent) return resolved
 
   const teamLabel = resolved.team?.name
@@ -493,12 +657,16 @@ export function isMisleadingBreakdownDescription(description) {
  * @param {string | null | undefined} teamLabel
  * @param {string | null | undefined} opponentLabel
  */
-export function buildBreakdownSubtitle(teamLabel, opponentLabel) {
-  if (opponentLabel && teamLabel) {
-    return `${opponentLabel}'s defence shuts them down`
+export function buildBreakdownSubtitle(possessionLabel, defendingLabel, kind) {
+  if (!possessionLabel || !defendingLabel) {
+    if (possessionLabel && kind === 'attack_breakdown') return `${possessionLabel} lose the ball`
+    if (possessionLabel && kind === 'counter_breakdown') return `${possessionLabel}'s counter breaks down`
+    return null
   }
-  if (teamLabel) return `${teamLabel}'s attack breaks down`
-  return null
+  if (kind === 'counter_breakdown') {
+    return `${defendingLabel} recover and snuff out ${possessionLabel}'s counter`
+  }
+  return `${defendingLabel} shut down ${possessionLabel}'s attack`
 }
 
 /**
@@ -507,6 +675,29 @@ export function buildBreakdownSubtitle(teamLabel, opponentLabel) {
  * @param {{ home: number, away: number } | null | undefined} [fallbackScore]
  * @param {{ home: number, away: number } | null | undefined} [fallbackPenaltyScore]
  */
+/**
+ * Latest match clock from a visible event list (newest-first or any order).
+ * @param {object[]} events
+ * @returns {{ minute: number, second: number }}
+ */
+export function getLatestClockFromEvents(events) {
+  if (!events?.length) return { minute: 0, second: 0 }
+
+  let latest = events[0]
+  for (const event of events) {
+    const m = Number(event.minute) || 0
+    const lm = Number(latest.minute) || 0
+    const s = Number(event.second) || 0
+    const ls = Number(latest.second) || 0
+    if (m > lm || (m === lm && s > ls)) latest = event
+  }
+
+  return {
+    minute: Number(latest.minute) || 0,
+    second: Number(latest.second) || 0,
+  }
+}
+
 export function getDisplayScoresFromEvents(events, fallbackScore, fallbackPenaltyScore) {
   let score = null
   let penaltyScore = null

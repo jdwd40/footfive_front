@@ -16,17 +16,85 @@ export function getEventDedupeKey(event) {
 }
 
 /**
+ * Readable reveal delay before showing an event (ms). Backend pacing is a hint only;
+ * very short backend delays are clamped to type-appropriate minimums.
  * @param {object} event
- * @param {number} defaultDelayMs
+ * @param {number} [pendingQueueLength]
  * @returns {number}
  */
-export function getEventPacingDelayMs(event, defaultDelayMs = 1000) {
+export function getReadableEventDelay(event, pendingQueueLength = 0) {
   const pacing = event?.pacing ?? event?.metadata?.pacing
-  if (pacing && pacing.delay_ms != null) {
-    const n = Number(pacing.delay_ms)
-    if (Number.isFinite(n) && n >= 0) return n
+  const backendDelay = pacing?.delay_ms
+  const type = String(event?.event_type ?? event?.type ?? '').toLowerCase()
+  const chainType = String(
+    event?.chain_type ?? event?.metadata?.chain_type ?? event?.chainType ?? ''
+  ).toLowerCase()
+  const isShootout =
+    chainType === 'shootout' ||
+    type.startsWith('shootout_')
+  const isPenalty =
+    chainType === 'penalty' ||
+    type.startsWith('penalty_')
+  const isMajor = [
+    'goal',
+    'penalty_scored',
+    'shootout_goal',
+    'shootout_end',
+    'match_end',
+    'final_score',
+    'match_winner',
+  ].includes(type)
+  const isShotResult = [
+    'shot_saved',
+    'shot_missed',
+    'shot_blocked',
+    'penalty_saved',
+    'penalty_missed',
+    'shootout_save',
+    'shootout_miss',
+  ].includes(type)
+  const isBuildUp = [
+    'goal_build_up',
+    'midfield_battle',
+    'counter_attack',
+    'attack_breakdown',
+    'counter_breakdown',
+  ].includes(type)
+  const isRestart = type === 'kickoff_restart'
+  let baseDelay
+  if (isShootout || isPenalty) {
+    baseDelay = 2000
+  } else if (isMajor) {
+    baseDelay = 4800
+  } else if (isShotResult) {
+    baseDelay = 3800
+  } else if (isRestart) {
+    baseDelay = 2800
+  } else if (isBuildUp) {
+    baseDelay = 3200
+  } else {
+    baseDelay = 3500
   }
-  return defaultDelayMs
+  if (pendingQueueLength > 15 && !isMajor) {
+    baseDelay = Math.min(baseDelay, 2500)
+  } else if (pendingQueueLength > 8 && !isMajor) {
+    baseDelay = Math.min(baseDelay, 3000)
+  }
+  if (typeof backendDelay === 'number' && Number.isFinite(backendDelay)) {
+    const readableMinimum = isShootout || isPenalty ? 2000 : 3000
+    const readableMaximum = isMajor ? 5500 : 5000
+    return Math.max(
+      readableMinimum,
+      Math.min(Math.max(baseDelay, backendDelay), readableMaximum)
+    )
+  }
+  return baseDelay
+}
+
+/** @deprecated Use getReadableEventDelay; kept for existing imports/tests. */
+export function getEventPacingDelayMs(event, defaultDelayMs = 3500, pendingQueueLength = 0) {
+  const delay = getReadableEventDelay(event, pendingQueueLength)
+  return Number.isFinite(delay) && delay >= 0 ? delay : defaultDelayMs
 }
 
 /**
@@ -40,7 +108,7 @@ export function getEventPacingDelayMs(event, defaultDelayMs = 1000) {
  */
 export function createPacedRevealQueue({
   enabled = true,
-  defaultDelayMs = 1000,
+  defaultDelayMs = 3500,
   onVisibleChange,
   onEventRevealed,
   scheduleTimeout = setTimeout,
@@ -94,7 +162,7 @@ export function createPacedRevealQueue({
 
     revealing = true
     const event = queue.shift()
-    const delayMs = getEventPacingDelayMs(event, defaultDelayMs)
+    const delayMs = getReadableEventDelay(event, queue.length) || defaultDelayMs
 
     timerId = scheduleTimeout(() => {
       timerId = null
