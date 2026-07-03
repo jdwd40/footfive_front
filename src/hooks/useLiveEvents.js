@@ -11,6 +11,35 @@ const RECONNECT_DELAYS = [1000, 2000, 5000, 10000, 30000]
 const MAX_BUFFER = 200
 
 /**
+ * Wire-level duplicate guard keyed on seq. During the named→data-only SSE
+ * transition a backend may deliver the same event twice (once via a named
+ * `event: <type>` frame, once via a default frame); both land here, and
+ * without this guard `onEvent` fires twice per event. Bounded FIFO so a
+ * long-lived stream doesn't grow the set forever.
+ * @param {number} [limit]
+ */
+export function createSeenSeqTracker(limit = 512) {
+  const seen = new Set()
+  const fifo = []
+  return {
+    /** @returns {boolean} true if this seq was already seen (duplicate) */
+    check(seq) {
+      const n = Number(seq)
+      if (!Number.isFinite(n) || n <= 0) return false
+      if (seen.has(n)) return true
+      seen.add(n)
+      fifo.push(n)
+      if (fifo.length > limit) seen.delete(fifo.shift())
+      return false
+    },
+    clear() {
+      seen.clear()
+      fifo.length = 0
+    },
+  }
+}
+
+/**
  * @param {object} options
  * @param {number|null} [options.tournamentId]
  * @param {number|null} [options.fixtureId]
@@ -39,6 +68,10 @@ export function useLiveEvents({
   const mountedRef = useRef(true)
   const typedListenersRef = useRef([])
   const connectRef = useRef(() => {})
+  const seenSeqTrackerRef = useRef(null)
+  if (seenSeqTrackerRef.current == null) {
+    seenSeqTrackerRef.current = createSeenSeqTracker()
+  }
 
   const onEventRef = useRef(onEvent)
 
@@ -58,6 +91,12 @@ export function useLiveEvents({
 
   const pushEvent = useCallback((normalized) => {
     if (!normalized || !mountedRef.current) return
+
+    // Drop wire-level duplicates (named + default frame for the same event
+    // during the SSE transition) before they reach onEvent/consumers.
+    if (normalized.type !== 'connected' && seenSeqTrackerRef.current.check(normalized.seq)) {
+      return
+    }
 
     console.log('[SSE] event', normalized.type, 'seq', normalized.seq, 'fixtureId', normalized.fixtureId)
 
@@ -148,6 +187,13 @@ export function useLiveEvents({
       reconnectAttemptRef.current = 0
     }
 
+    // Legacy compatibility only: older backends send named SSE frames
+    // (`event: <type>`), which EventSource delivers solely to listeners
+    // registered for that exact name. Current backends send data-only
+    // frames handled by onmessage below, so these listeners are NOT the
+    // delivery gate — new event types flow through onmessage without
+    // touching LIVE_SSE_EVENT_TYPES. Duplicate delivery during transition
+    // is suppressed in pushEvent via the seen-seq tracker.
     const listeners = []
     for (const type of LIVE_SSE_EVENT_TYPES) {
       const fn = (e) => {
@@ -159,6 +205,9 @@ export function useLiveEvents({
     }
     typedListenersRef.current = listeners
 
+    // Primary path: default (un-named) SSE frames. The event type is read
+    // from the JSON payload by normalizeLiveEvent, so unknown/new backend
+    // types are received without any frontend whitelist change.
     eventSource.onmessage = (event) => {
       if (!mountedRef.current) return
       handleSsePayload('message', event.data)
@@ -197,6 +246,9 @@ export function useLiveEvents({
     (clearHistory = false) => {
       if (clearHistory) {
         lastSeqRef.current = 0
+        // Full replay expected after seq reset — forget seen seqs or the
+        // replayed catchup events would all be dropped as duplicates.
+        seenSeqTrackerRef.current.clear()
         setEvents([])
       }
       reconnectAttemptRef.current = 0

@@ -3,10 +3,12 @@
  * @see front_end_integration_guide.md
  */
 
-/** SSE named events the backend may emit (non-exhaustive; unknown types still normalized).
- *  EventSource only delivers a named event to listeners explicitly registered for that name
- *  (onmessage fires only for un-named messages), so any flow type the backend emits as a
- *  named SSE event MUST appear here or the frontend silently drops it.
+/** Known live event types, kept for reference and for compatibility with
+ *  LEGACY backends that still emit named SSE frames (`event: <type>`), which
+ *  EventSource only delivers to listeners registered for that exact name.
+ *  Current backends send data-only SSE frames handled by `onmessage`, with
+ *  the type read from the JSON payload — so this list is NOT a receive gate:
+ *  event types missing from it still reach the frontend and are normalized.
  */
 export const LIVE_SSE_EVENT_TYPES = [
   'connected',
