@@ -199,9 +199,21 @@ export function normalizeLiveEvent(raw, opts = {}) {
     data.pacing != null ? data.pacing : metadataPacing ?? parsed.metadata?.pacing ?? null
   const pacing = normalizePacing(pacingSource)
 
+  // Structured contract fields (backend Improvement #2). side identifies the
+  // event's team without description parsing; matchPhase is the match-level
+  // phase (first_half, penalty_shootout, ...) — distinct from the chain
+  // micro `phase` key, which passes through untouched via the spread.
+  const side = data.side === 'home' || data.side === 'away' ? data.side : null
+  const matchPhase =
+    typeof (data.matchPhase ?? data.match_phase) === 'string'
+      ? (data.matchPhase ?? data.match_phase)
+      : null
+
   return {
     ...data,
     type,
+    side,
+    matchPhase,
     bundleId,
     bundleStep,
     chain_type,
@@ -288,9 +300,15 @@ const MATCH_SCORE_EVENT_TYPES = new Set([
   'shootout_end',
 ])
 
-/** Event types that may carry an authoritative penalty-shootout score snapshot. */
+/** Event types that may carry an authoritative penalty-shootout score snapshot.
+ *  New backends stamp a running `penaltyScore` on every shootout event; the
+ *  guard in canApplyPenaltyScoreFromEvent no-ops for old events without it. */
 const PENALTY_SCORE_EVENT_TYPES = new Set([
   'shootout_goal',
+  'shootout_save',
+  'shootout_miss',
+  'shootout_walkup',
+  'shootout_reaction',
   'penalty_scored',
   'match_end',
   'shootout_end',
@@ -541,6 +559,23 @@ export function resolveBreakdownParties(event, ctx = {}, description = null) {
   const defendingResolved = resolveEventTeam(event, ctx)
   const attackingResolved = resolveOpponentTeam(event, ctx, defendingResolved)
 
+  // Structured side (backend Improvement #2): on breakdown events, teamId and
+  // side identify the DEFENDING team. When present and both teams are known,
+  // derive the parties directly and skip the description regexes below —
+  // those remain only as fallback for old events without `side`.
+  if (event?.side === 'home' || event?.side === 'away') {
+    const defending = event.side === 'home' ? home : away
+    const possession = event.side === 'home' ? away : home
+    if (defending?.name && possession?.name) {
+      return {
+        possessionTeam: possession,
+        possessionSide: event.side === 'home' ? 'away' : 'home',
+        defendingTeam: defending,
+        defendingSide: event.side,
+      }
+    }
+  }
+
   if (kind === 'attack_breakdown') {
     const parsed = parseAttackBreakdownDescription(desc)
     if (parsed) {
@@ -619,6 +654,16 @@ export function resolveEventDisplayTeams(event, ctx = {}, description = null) {
 
 export function reconcileEventTeamWithDescription(event, ctx, description) {
   const resolved = resolveEventTeam(event, ctx)
+
+  // Structured side from the backend is authoritative: skip the
+  // description-text override entirely. Only trusted when it actually
+  // resolved to a known team, so a side field without matching team data
+  // still falls back to the legacy description path below (needed for old
+  // persisted events and old backend deployments).
+  if ((event?.side === 'home' || event?.side === 'away') && resolved.team) {
+    return resolved
+  }
+
   if (!description) return resolved
 
   const homeName =
@@ -698,6 +743,27 @@ export function getLatestClockFromEvents(events) {
     minute: Number(latest.minute) || 0,
     second: Number(latest.second) || 0,
   }
+}
+
+/**
+ * Latest match-level phase from a visible event list (any order).
+ * Events without a matchPhase (old backend / old persisted rows) are
+ * ignored, so mixed lists degrade gracefully.
+ * @param {object[]} events
+ * @returns {string | null}
+ */
+export function getLatestMatchPhaseFromEvents(events) {
+  if (!events?.length) return null
+  let latest = null
+  for (const event of events) {
+    if (typeof event?.matchPhase !== 'string' || !event.matchPhase) continue
+    // compareLiveEventsDesc sorts newest first: negative means `event` is
+    // newer than the current latest.
+    if (latest == null || compareLiveEventsDesc(event, latest) < 0) {
+      latest = event
+    }
+  }
+  return latest ? latest.matchPhase : null
 }
 
 export function getDisplayScoresFromEvents(events, fallbackScore, fallbackPenaltyScore) {

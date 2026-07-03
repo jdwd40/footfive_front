@@ -17,6 +17,7 @@ import {
   parseAttackBreakdownDescription,
   getDisplayScoresFromEvents,
   getLatestClockFromEvents,
+  getLatestMatchPhaseFromEvents,
 } from './liveEventModel'
 
 describe('normalizeLiveEvent', () => {
@@ -463,5 +464,161 @@ describe('getDisplayScoresFromEvents', () => {
       { home: 1, away: 0 }
     )
     expect(score).toEqual({ home: 3, away: 0 })
+  })
+})
+
+describe('structured side + matchPhase (Improvement #2)', () => {
+  const homeTeam = { id: 1, name: 'Metro City' }
+  const awayTeam = { id: 2, name: 'Airway City' }
+  const ctx = { homeTeam, awayTeam }
+
+  it('lifts side and matchPhase from the SSE payload shape', () => {
+    const normalized = normalizeLiveEvent({
+      type: 'goal',
+      fixtureId: 7,
+      seq: 12,
+      minute: 30,
+      payload: { teamId: 1, side: 'home', matchPhase: 'first_half' },
+    })
+    expect(normalized.side).toBe('home')
+    expect(normalized.matchPhase).toBe('first_half')
+  })
+
+  it('lifts side and matchPhase from the REST metadata shape', () => {
+    const normalized = normalizeLiveEvent({
+      event_type: 'foul',
+      fixture_id: 7,
+      minute: 55,
+      metadata: { teamId: 2, side: 'away', matchPhase: 'second_half' },
+    })
+    expect(normalized.side).toBe('away')
+    expect(normalized.matchPhase).toBe('second_half')
+  })
+
+  it('normalizes an invalid side to null', () => {
+    const normalized = normalizeLiveEvent({
+      type: 'goal',
+      fixtureId: 7,
+      payload: { side: 'left-wing' },
+    })
+    expect(normalized.side).toBeNull()
+  })
+
+  it('defaults side and matchPhase to null on old events', () => {
+    const normalized = normalizeLiveEvent({ type: 'goal', fixtureId: 7, minute: 10 })
+    expect(normalized.side).toBeNull()
+    expect(normalized.matchPhase).toBeNull()
+  })
+
+  it('does not clobber the chain micro `phase` key', () => {
+    const normalized = normalizeLiveEvent({
+      type: 'goal_build_up',
+      fixtureId: 7,
+      payload: { phase: 'push_forward', matchPhase: 'first_half' },
+    })
+    expect(normalized.phase).toBe('push_forward')
+    expect(normalized.matchPhase).toBe('first_half')
+  })
+
+  it('structured side beats contradictory description text (flow events)', () => {
+    // Description names the away team, but the backend says home.
+    const event = {
+      type: 'build_up_play',
+      side: 'home',
+      teamId: 1,
+      description: 'Airway City push forward through midfield.',
+    }
+    const { team, side } = reconcileEventTeamWithDescription(event, ctx, event.description)
+    expect(side).toBe('home')
+    expect(team.name).toBe('Metro City')
+  })
+
+  it('events without side still use the description fallback', () => {
+    // Legacy event: teamId resolves to home, but the copy names the away
+    // team — without a structured side the description override must still
+    // correct the resolution (pre-Improvement-#2 behavior).
+    const event = {
+      type: 'build_up_play',
+      teamId: 1,
+      description: 'Airway City push forward through midfield.',
+    }
+    const { side } = reconcileEventTeamWithDescription(event, ctx, event.description)
+    expect(side).toBe('away')
+  })
+
+  it('breakdown events with side derive parties without description regexes', () => {
+    // Reworded copy the legacy regex cannot parse; side (defender) present.
+    const event = {
+      type: 'attack_breakdown',
+      side: 'away',
+      teamId: 2,
+      description: 'A crunching challenge halts the move.',
+    }
+    const parties = resolveBreakdownParties(event, ctx, event.description)
+    expect(parties.defendingSide).toBe('away')
+    expect(parties.defendingTeam.name).toBe('Airway City')
+    expect(parties.possessionSide).toBe('home')
+    expect(parties.possessionTeam.name).toBe('Metro City')
+  })
+
+  it('breakdown events without side still parse the legacy description', () => {
+    const event = {
+      type: 'attack_breakdown',
+      description: "Airway City shut down Metro City's attack.",
+    }
+    const parties = resolveBreakdownParties(event, ctx, event.description)
+    expect(parties.defendingSide).toBe('away')
+    expect(parties.possessionSide).toBe('home')
+  })
+})
+
+describe('running penaltyScore on shootout events', () => {
+  it('applies penaltyScore from all shootout event types when present', () => {
+    for (const type of [
+      'shootout_goal',
+      'shootout_save',
+      'shootout_miss',
+      'shootout_walkup',
+      'shootout_reaction',
+    ]) {
+      const event = { type, penaltyScore: { home: 2, away: 1 } }
+      expect(canApplyPenaltyScoreFromEvent(event)).toBe(true)
+    }
+  })
+
+  it('no-ops for old shootout events without penaltyScore', () => {
+    for (const type of ['shootout_save', 'shootout_miss', 'shootout_walkup', 'shootout_reaction']) {
+      expect(canApplyPenaltyScoreFromEvent({ type })).toBe(false)
+      expect(canApplyPenaltyScoreFromEvent({ type, shootoutScore: { home: 1, away: 0 } })).toBe(false)
+    }
+  })
+
+  it('never applies penaltyScore from non-shootout types', () => {
+    expect(canApplyPenaltyScoreFromEvent({ type: 'goal', penaltyScore: { home: 1, away: 0 } })).toBe(false)
+  })
+})
+
+describe('getLatestMatchPhaseFromEvents', () => {
+  it('returns the phase of the newest event carrying one', () => {
+    const phase = getLatestMatchPhaseFromEvents([
+      { type: 'goal', seq: 10, minute: 30, matchPhase: 'first_half' },
+      { type: 'shootout_goal', seq: 50, minute: 120, matchPhase: 'penalty_shootout' },
+      { type: 'foul', seq: 30, minute: 70, matchPhase: 'second_half' },
+    ])
+    expect(phase).toBe('penalty_shootout')
+  })
+
+  it('ignores events without matchPhase (mixed old/new lists)', () => {
+    const phase = getLatestMatchPhaseFromEvents([
+      { type: 'goal', seq: 99, minute: 80 }, // newest, but old event
+      { type: 'foul', seq: 30, minute: 70, matchPhase: 'second_half' },
+    ])
+    expect(phase).toBe('second_half')
+  })
+
+  it('returns null for empty lists or lists without phases', () => {
+    expect(getLatestMatchPhaseFromEvents([])).toBeNull()
+    expect(getLatestMatchPhaseFromEvents(null)).toBeNull()
+    expect(getLatestMatchPhaseFromEvents([{ type: 'goal', seq: 1 }])).toBeNull()
   })
 })

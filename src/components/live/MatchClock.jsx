@@ -1,9 +1,25 @@
 /* eslint-disable react-hooks/set-state-in-effect -- clock display syncs from props/events */
 import { useState, useEffect, useMemo } from 'react'
 import { formatMatchTime } from '../../utils/formatters'
+import { getLatestMatchPhaseFromEvents } from '../../utils/liveEventModel'
 
 function eventKind(e) {
   return e?.type || e?.event_type || e?.eventType || ''
+}
+
+// Match-level phase stamped by the backend on every event (Improvement #2).
+// Preferred over the event-type scan below, which stays as fallback for old
+// events / old backends that don't carry matchPhase.
+const MATCH_PHASE_LABELS = {
+  pre_match: 'Pre-Match',
+  first_half: '1st Half',
+  halftime: 'Half Time',
+  second_half: '2nd Half',
+  extra_time_first_half: 'Extra Time',
+  extra_time_halftime: 'ET Half Time',
+  extra_time_second_half: 'ET 2nd Half',
+  penalty_shootout: 'Penalty Shootout',
+  finished: 'Match Ended',
 }
 
 export default function MatchClock({ events, isLive, matchMinute }) {
@@ -40,6 +56,11 @@ export default function MatchClock({ events, isLive, matchMinute }) {
   const getPeriod = () => {
     if (!normalizedEvents.length) return 'Pre-Match'
 
+    // Prefer the structured matchPhase of the latest visible event.
+    const phase = getLatestMatchPhaseFromEvents(normalizedEvents)
+    if (phase && MATCH_PHASE_LABELS[phase]) return MATCH_PHASE_LABELS[phase]
+
+    // Fallback: legacy event-type scan (events without matchPhase).
     const kinds = new Set(normalizedEvents.map(eventKind))
     const hasKickoff = kinds.has('kickoff') || kinds.has('match_start')
     const hasHalftime = kinds.has('halftime')
