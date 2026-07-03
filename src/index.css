@@ -311,9 +311,25 @@
 }
 
 .animate-scroll-left {
-  animation: scroll-left 20s linear infinite;
+  animation: scroll-left var(--ticker-duration, 40s) linear infinite;
 }
 
 .animate-scroll-left:hover {
   animation-play-state: paused;
+}
+
+/* Goal ticker: single pass right-to-left, then removed via onAnimationEnd */
+@keyframes goal-ticker-scroll-once {
+  0% {
+    transform: translate(100%, -50%);
+  }
+  100% {
+    transform: translate(calc(-100% - 24px), -50%);
+  }
+}
+
+.goal-ticker-scroll-once {
+  left: 0;
+  animation: goal-ticker-scroll-once var(--ticker-duration, 12s) linear forwards;
+  will-change: transform;
 }

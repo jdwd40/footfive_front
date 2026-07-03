@@ -4,6 +4,7 @@ import useLiveStore from '../stores/useLiveStore'
 import useLiveEvents from '../hooks/useLiveEvents'
 import { liveApi } from '../api/client'
 import { isTournamentPlayingState, isTournamentBreakLikeState } from '../utils/tournamentPhases'
+import { sortFixturesByBracket } from '../utils/tickerHelpers'
 import RoundSection from '../components/live/RoundSection'
 import TeamStatsPanel from '../components/live/TeamStatsPanel'
 import WinnerCelebration from '../components/live/WinnerCelebration'
@@ -339,6 +340,11 @@ export default function LiveDashboard() {
     }
   })
 
+  const currentRoundFixtures = useMemo(
+    () => sortFixturesByBracket(currentRound ? matchesByRound[currentRound] || [] : []),
+    [matchesByRound, currentRound],
+  )
+
   // Determine round states
   const getRoundState = (round) => {
     const roundMatches = matchesByRound[round]
@@ -458,17 +464,19 @@ export default function LiveDashboard() {
             currentRound={currentRound}
           />
 
-          {/* Goal Ticker - Shows scores and announces goals during live rounds */}
+          {/* Goal ticker — announces each goal once, then scrolls off */}
           <GoalTicker
+            key={tournament?.tournamentId ?? 'default'}
             goalEvents={recentEvents}
-            matches={currentRound ? matchesByRound[currentRound] || [] : []}
-            isLive={isTournamentPlayingState(tournament?.state)}
-            isBreak={
-              isTournamentBreakLikeState(tournament?.state) ||
-              tournament?.state === 'ROUND_COMPLETE'
+            fixtures={currentRoundFixtures}
+            tournamentId={tournament?.tournamentId}
+            showTicker={
+              isTournamentPlayingState(liveTournament?.state) ||
+              (currentRoundFixtures.length > 0 &&
+                currentRoundFixtures.some((m) =>
+                  ['FIRST_HALF', 'SECOND_HALF', 'EXTRA_TIME_1', 'EXTRA_TIME_2', 'PENALTIES', 'HALFTIME', 'ET_HALFTIME'].includes(m.state),
+                ))
             }
-            currentRound={currentRound || ''}
-            nextRound={stateConfig?.phase === 'break' ? stateConfig?.title?.replace(' Starting', '') : ''}
           />
 
           {/* Current Round Highlight (when live) */}
