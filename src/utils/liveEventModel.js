@@ -77,6 +77,8 @@ export const LIVE_SSE_EVENT_TYPES = [
   'final_score',
   'match_winner',
   'match_draw',
+  // Commentator analysis (backend CommentaryEngine)
+  'match_observation',
 ]
 
 /**
@@ -209,11 +211,19 @@ export function normalizeLiveEvent(raw, opts = {}) {
       ? (data.matchPhase ?? data.match_phase)
       : null
 
+  // Commentary observation fields (match_observation events). Passed
+  // through for all types; null when absent so consumers can rely on the
+  // keys existing.
+  const subtype = typeof data.subtype === 'string' ? data.subtype : null
+  const severity = typeof data.severity === 'string' ? data.severity : null
+
   return {
     ...data,
     type,
     side,
     matchPhase,
+    subtype,
+    severity,
     bundleId,
     bundleStep,
     chain_type,
@@ -316,6 +326,47 @@ const PENALTY_SCORE_EVENT_TYPES = new Set([
 
 /** Goal toasts fire on paced reveal for these types only. */
 export const GOAL_TOAST_EVENT_TYPES = new Set(['goal', 'penalty_scored'])
+
+/** Backend commentator-analysis event (CommentaryEngine). Display-only:
+ *  never affects score, clock precedence, penalty score, or the ticker. */
+export const OBSERVATION_EVENT_TYPE = 'match_observation'
+
+export function isMatchObservationEvent(event) {
+  return (event?.type || event?.event_type || '') === OBSERVATION_EVENT_TYPE
+}
+
+/** Short UI chips per observation subtype; fallback label covers unknown
+ *  future subtypes so the feed never shows a raw slug. */
+export const OBSERVATION_SUBTYPE_LABELS = {
+  momentum: 'Momentum',
+  pressure: 'Pressure',
+  shaky_defence: 'Shaky defence',
+  scoreline: 'Scoreline',
+  underdog: 'Underdog',
+  favourite_control: 'In control',
+  late_pressure: 'Late drama',
+  comeback: 'Comeback',
+  collapse: 'Collapse',
+  warning_signs: 'Warning signs',
+  game_state: 'Game state',
+}
+
+/**
+ * Display bundle for a match_observation row: commentator text plus a
+ * human subtype chip. Text comes from the backend only — the frontend
+ * never invents observations.
+ * @param {object} event - normalized live event
+ * @returns {{ text: string, subtypeLabel: string } | null}
+ */
+export function getObservationDisplay(event) {
+  if (!isMatchObservationEvent(event)) return null
+  const text = event.description || ''
+  if (!text) return null
+  const subtype = event.subtype || null
+  const subtypeLabel =
+    (subtype && OBSERVATION_SUBTYPE_LABELS[subtype]) || 'Analysis'
+  return { text, subtypeLabel }
+}
 
 /**
  * Whether `event.score` should update displayed match score (not type-based increment).

@@ -18,6 +18,8 @@ import {
   getDisplayScoresFromEvents,
   getLatestClockFromEvents,
   getLatestMatchPhaseFromEvents,
+  isMatchObservationEvent,
+  getObservationDisplay,
 } from './liveEventModel'
 
 describe('normalizeLiveEvent', () => {
@@ -620,5 +622,103 @@ describe('getLatestMatchPhaseFromEvents', () => {
     expect(getLatestMatchPhaseFromEvents([])).toBeNull()
     expect(getLatestMatchPhaseFromEvents(null)).toBeNull()
     expect(getLatestMatchPhaseFromEvents([{ type: 'goal', seq: 1 }])).toBeNull()
+  })
+})
+
+describe('match_observation events (CommentaryEngine)', () => {
+  const rawObservation = {
+    seq: 77,
+    type: 'match_observation',
+    fixtureId: 10,
+    minute: 62,
+    scope: 'match',
+    payload: {
+      subtype: 'pressure',
+      severity: 'medium',
+      teamId: 1,
+      side: 'home',
+      matchPhase: 'second_half',
+      description: 'Metro City are having a good spell here. They look dangerous.',
+      score: { home: 1, away: 1 },
+    },
+  }
+
+  it('normalizes match_observation with subtype/severity/side/matchPhase', () => {
+    const n = normalizeLiveEvent(rawObservation)
+    expect(n.type).toBe('match_observation')
+    expect(n.subtype).toBe('pressure')
+    expect(n.severity).toBe('medium')
+    expect(n.side).toBe('home')
+    expect(n.matchPhase).toBe('second_half')
+    expect(n.minute).toBe(62)
+    expect(n.description).toContain('Metro City')
+  })
+
+  it('is listed in LIVE_SSE_EVENT_TYPES', () => {
+    expect(LIVE_SSE_EVENT_TYPES).toContain('match_observation')
+  })
+
+  it('getObservationDisplay returns backend text + subtype label', () => {
+    const n = normalizeLiveEvent(rawObservation)
+    expect(isMatchObservationEvent(n)).toBe(true)
+    const display = getObservationDisplay(n)
+    expect(display.text).toBe(
+      'Metro City are having a good spell here. They look dangerous.'
+    )
+    expect(display.subtypeLabel).toBe('Pressure')
+  })
+
+  it('unknown future subtypes fall back to a safe label', () => {
+    const n = normalizeLiveEvent({
+      ...rawObservation,
+      payload: { ...rawObservation.payload, subtype: 'brand_new_subtype' },
+    })
+    const display = getObservationDisplay(n)
+    expect(display.subtypeLabel).toBe('Analysis')
+    expect(display.text.length).toBeGreaterThan(0)
+  })
+
+  it('getObservationDisplay returns null for non-observation events', () => {
+    expect(getObservationDisplay(normalizeLiveEvent({ type: 'goal', seq: 1 }))).toBeNull()
+    expect(getObservationDisplay(null)).toBeNull()
+  })
+
+  it('never applies score or penalty score from observations', () => {
+    const n = normalizeLiveEvent(rawObservation)
+    expect(canApplyMatchScoreFromEvent(n)).toBe(false)
+    expect(canApplyPenaltyScoreFromEvent(n)).toBe(false)
+  })
+
+  it('does not disturb score resolution in a mixed feed', () => {
+    const events = [
+      normalizeLiveEvent({
+        ...rawObservation,
+        seq: 90,
+        payload: { ...rawObservation.payload, score: { home: 9, away: 9 } },
+      }),
+      normalizeLiveEvent({
+        type: 'goal',
+        seq: 80,
+        fixtureId: 10,
+        minute: 60,
+        payload: { score: { home: 1, away: 1 }, teamId: 1 },
+      }),
+    ]
+    const { score } = getDisplayScoresFromEvents(events, null, null)
+    expect(score).toEqual({ home: 1, away: 1 })
+  })
+
+  it('unknown future event types still normalize safely', () => {
+    const n = normalizeLiveEvent({
+      type: 'half_time_show',
+      seq: 5,
+      fixtureId: 3,
+      minute: 45,
+      payload: { description: 'something new' },
+    })
+    expect(n).not.toBeNull()
+    expect(n.type).toBe('half_time_show')
+    expect(n.description).toBe('something new')
+    expect(isMatchObservationEvent(n)).toBe(false)
   })
 })

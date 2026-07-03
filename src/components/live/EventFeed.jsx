@@ -7,6 +7,8 @@ import {
   BREAKDOWN_EVENT_TYPES,
   POSSESSION_INDICATOR_EVENT_TYPES,
   buildBreakdownSubtitle,
+  isMatchObservationEvent,
+  getObservationDisplay,
 } from '../../utils/liveEventModel'
 
 /** Resolve event kind for display (unified `type` or legacy `event_type`). */
@@ -101,6 +103,14 @@ export default function EventFeed({
 
 function EventItem({ event, homeTeam, awayTeam, isLatest }) {
   const kind = eventKind(event)
+
+  // Commentator analysis rows render quote-style: backend-provided text,
+  // subtype chip, no team headline/possession chrome so they read as
+  // punditry rather than a match incident.
+  if (isMatchObservationEvent(event)) {
+    return <ObservationItem event={event} isLatest={isLatest} />
+  }
+
   const teamCtx = { homeTeam, awayTeam }
   const rawDescription = event.description || null
   const { possession, opponent, isBreakdown } = resolveEventDisplayTeams(
@@ -305,6 +315,47 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
       )}
 
       {isGoal && <div className="text-2xl animate-bounce shrink-0">🎉</div>}
+    </div>
+  )
+}
+
+function ObservationItem({ event, isLatest }) {
+  const display = getObservationDisplay(event)
+  if (!display) return null
+  const minute = event.minute != null ? event.minute : 0
+  const second = event.second != null ? event.second : 0
+
+  return (
+    <div
+      className={`
+        flex items-center gap-3 rounded-xl transition-all duration-300 p-2.5
+        bg-sky-500/8 border border-sky-400/20
+        ${isLatest ? 'animate-slide-up' : ''}
+      `}
+    >
+      <div className="min-w-[56px] text-center">
+        <span className="text-sm font-mono font-bold text-text-muted">
+          {formatMatchTime(minute, second)}
+        </span>
+        {event.seq > 0 && (
+          <span className="block text-[10px] text-text-muted/70 font-mono">#{event.seq}</span>
+        )}
+      </div>
+
+      <div className="w-8 h-8 text-lg rounded-full flex items-center justify-center bg-sky-500/15">
+        {getEventIcon('match_observation')}
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <div className="mb-1">
+          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-sky-500/15 text-sky-300 border border-sky-400/25">
+            <span>Commentary</span>
+            <span className="normal-case tracking-normal">·</span>
+            <span className="normal-case tracking-normal">{display.subtypeLabel}</span>
+          </span>
+        </div>
+        <p className="text-sm text-sky-100/90 italic">{display.text}</p>
+      </div>
     </div>
   )
 }

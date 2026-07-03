@@ -117,6 +117,7 @@ export const eventIcons = {
   shot_blocked: '🛡️',
   shootout_save: '🧤',
   shootout_miss: '❌',
+  match_observation: '🎙️',
   midfield_battle: '⚔️',
   goal_build_up: '📈',
   attack_breakdown: '💥',
