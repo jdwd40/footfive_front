@@ -137,11 +137,18 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
     return token.length >= 3 && text.includes(token)
   }
 
+  // Backend flow lines may be player-led ("M. Vane glides past his marker.")
+  // rather than team-led; a description naming the event's own player is just
+  // as trustworthy as one naming the team and must not be discarded.
+  const descriptionNamesPlayer = (text) =>
+    Boolean(text && playerName && text.includes(playerName))
+
   const useDescriptionAsHeadline =
     rawDescription &&
     POSSESSION_FLOW_EVENT_TYPES.has(kind) &&
     teamLabel &&
-    descriptionNamesTeam(rawDescription, teamLabel) &&
+    (descriptionNamesTeam(rawDescription, teamLabel) ||
+      descriptionNamesPlayer(rawDescription)) &&
     !BREAKDOWN_EVENT_TYPES.has(kind)
 
   let description = null
@@ -158,7 +165,8 @@ function EventItem({ event, homeTeam, awayTeam, isLatest }) {
       description &&
       teamLabel &&
       POSSESSION_FLOW_EVENT_TYPES.has(kind) &&
-      !descriptionNamesTeam(description, teamLabel)
+      !descriptionNamesTeam(description, teamLabel) &&
+      !descriptionNamesPlayer(description)
     ) {
       description = null
     }
