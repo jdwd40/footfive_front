@@ -6,6 +6,8 @@ import useLiveEvents from '../hooks/useLiveEvents'
 import usePacedEventReveal from '../hooks/usePacedEventReveal'
 import MatchClock from '../components/live/MatchClock'
 import EventFeed from '../components/live/EventFeed'
+import LiveBettingPanel from '../components/betting/LiveBettingPanel'
+import FixtureBetBar from '../components/betting/FixtureBetBar'
 import LoadingSpinner from '../components/common/LoadingSpinner'
 import ErrorDisplay from '../components/common/ErrorDisplay'
 import { useToast } from '../components/common/Toast'
@@ -415,6 +417,7 @@ export default function LiveMatchDetail() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(380px,520px)_minmax(480px,1fr)] gap-4 xl:gap-6 xl:items-start">
+        <div className="space-y-4 min-w-0">
         <div
           className={`
           rounded-2xl bg-card border p-6 min-w-0
@@ -510,6 +513,24 @@ export default function LiveMatchDetail() {
               <StatRow label="xG" home={match.stats.home?.xg?.toFixed(2)} away={match.stats.away?.xg?.toFixed(2)} />
             </div>
           </div>
+        )}
+        </div>
+
+        {/* Virtual betting - self-contained polling, never touches the event queue */}
+        {match?.state === 'SCHEDULED' ? (
+          <div className="rounded-2xl bg-card border border-border p-4">
+            <p className="text-sm font-bold text-text uppercase tracking-wide mb-1">🎰 Pre-Match Betting</p>
+            <FixtureBetBar
+              fixtureId={parseInt(fixtureId, 10)}
+              homeTeam={match?.homeTeam}
+              awayTeam={match?.awayTeam}
+            />
+          </div>
+        ) : (
+          <LiveBettingPanel
+            fixtureId={parseInt(fixtureId, 10)}
+            isFinished={match?.state === 'FINISHED' || match?.isFinished === true}
+          />
         )}
         </div>
 

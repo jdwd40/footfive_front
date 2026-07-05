@@ -12,10 +12,34 @@ const api = axios.create({
   },
 })
 
-// Request interceptor for logging
+// Auth token storage (virtual betting accounts)
+const AUTH_TOKEN_KEY = 'footfive:authToken'
+
+export const getStoredToken = () => {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+export const setStoredToken = (token) => {
+  try {
+    if (token) localStorage.setItem(AUTH_TOKEN_KEY, token)
+    else localStorage.removeItem(AUTH_TOKEN_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+// Request interceptor: logging + auth header
 api.interceptors.request.use(
   (config) => {
     console.log(`[API] ${config.method?.toUpperCase()} ${config.url}`)
+    const token = getStoredToken()
+    if (token && !config.headers.Authorization) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
     return config
   },
   (error) => Promise.reject(error)
@@ -344,6 +368,74 @@ export const liveApi = {
 
     const queryString = queryParams.toString()
     return `${baseUrl}/live/events${queryString ? `?${queryString}` : ''}`
+  },
+}
+
+// Auth API (virtual betting accounts - dummy funds only)
+export const authApi = {
+  register: async (username, password) => {
+    const { data } = await api.post('/auth/register', { username, password })
+    return data
+  },
+  login: async (username, password) => {
+    const { data } = await api.post('/auth/login', { username, password })
+    return data
+  },
+  getProfile: async () => {
+    const { data } = await api.get('/auth/profile')
+    return data
+  },
+}
+
+// Wallet API (virtual FootFive Credits - no real money)
+export const walletApi = {
+  getWallet: async () => {
+    const { data } = await api.get('/wallet')
+    return data
+  },
+  addDummyFunds: async (amount) => {
+    const { data } = await api.post('/wallet/add-funds', { amount })
+    return data
+  },
+  getTransactions: async (limit = 20) => {
+    const { data } = await api.get('/wallet/transactions', { params: { limit } })
+    return data
+  },
+}
+
+// Betting API (virtual bets on cup matches)
+export const bettingApi = {
+  getFixtureOdds: async (fixtureId) => {
+    const { data } = await api.get(`/betting/fixtures/${fixtureId}/odds`)
+    return data
+  },
+  getLiveOdds: async (fixtureId) => {
+    const { data } = await api.get(`/betting/fixtures/${fixtureId}/live-odds`)
+    return data
+  },
+  getChampionshipOdds: async () => {
+    const { data } = await api.get('/betting/championship/odds')
+    return data
+  },
+  placeFixtureBet: async ({ fixtureId, teamId, stake }) => {
+    const { data } = await api.post('/betting/fixture', { fixtureId, teamId, stake })
+    return data
+  },
+  placeLiveBet: async ({ fixtureId, teamId, stake }) => {
+    const { data } = await api.post('/betting/fixture/live', { fixtureId, teamId, stake })
+    return data
+  },
+  placeChampionshipBet: async ({ teamId, stake }) => {
+    const { data } = await api.post('/betting/championship', { teamId, stake })
+    return data
+  },
+  getMyBets: async (params = {}) => {
+    const { data } = await api.get('/betting/bets', { params })
+    return data
+  },
+  getSummary: async () => {
+    const { data } = await api.get('/betting/summary')
+    return data
   },
 }
 

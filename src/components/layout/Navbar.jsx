@@ -2,17 +2,21 @@ import { useState, useEffect } from 'react'
 import { Link, NavLink } from 'react-router-dom'
 import { liveApi } from '../../api/client'
 import { isTournamentPlayingState } from '../../utils/tournamentPhases'
+import useAuthStore from '../../stores/useAuthStore'
+import { formatFC } from '../../utils/betting'
 
 const navLinks = [
   { to: '/', label: 'Home', icon: '🏠' },
   { to: '/live', label: 'Live', highlight: true, icon: '🔴' },
   { to: '/teams', label: 'Teams', icon: '👥' },
   { to: '/fixtures', label: 'Fixtures', icon: '📅' },
+  { to: '/bets', label: 'Bets', icon: '🎫' },
 ]
 
 export default function Navbar() {
   const [isLive, setIsLive] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const { token, user, balance, refreshWallet } = useAuthStore()
 
   // Check if tournament is live
   useEffect(() => {
@@ -27,6 +31,14 @@ export default function Navbar() {
     const interval = setInterval(checkLiveStatus, 30000)
     return () => clearInterval(interval)
   }, [])
+
+  // Keep the wallet chip fresh (bets settle in the background)
+  useEffect(() => {
+    if (!token) return
+    refreshWallet()
+    const interval = setInterval(refreshWallet, 30000)
+    return () => clearInterval(interval)
+  }, [token, refreshWallet])
 
   return (
     <nav className="sticky top-0 z-50 bg-bg/80 backdrop-blur-xl border-b border-border">
@@ -76,12 +88,59 @@ export default function Navbar() {
                 )}
               </NavLink>
             ))}
+
+            {/* Account / Wallet chip (desktop) */}
+            <NavLink
+              to="/account"
+              className={({ isActive }) =>
+                `ml-2 flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-medium border transition-all ${
+                  isActive
+                    ? 'border-primary/50 bg-primary/15 text-primary'
+                    : 'border-border bg-card text-text-muted hover:text-text hover:border-primary/30'
+                }`
+              }
+            >
+              {token && user ? (
+                <>
+                  <span>🕶️</span>
+                  <span className="max-w-[90px] truncate">{user.username}</span>
+                  {balance != null && (
+                    <span className="font-mono text-xs text-primary">{formatFC(balance)}</span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span>🎫</span>
+                  <span>Login</span>
+                </>
+              )}
+            </NavLink>
           </div>
 
-          {/* Mobile Menu Button */}
+          {/* Mobile: wallet chip + menu button */}
+          <div className="flex items-center gap-2 sm:hidden">
+            <Link
+              to="/account"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-border bg-card text-xs"
+            >
+              {token && user ? (
+                <>
+                  <span>🕶️</span>
+                  {balance != null && (
+                    <span className="font-mono text-primary font-semibold">{formatFC(balance)}</span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span>🎫</span>
+                  <span className="text-text-muted">Login</span>
+                </>
+              )}
+            </Link>
+
           <button 
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="sm:hidden p-2 rounded-xl hover:bg-card text-text-muted hover:text-text transition-colors"
+            className="p-2 rounded-xl hover:bg-card text-text-muted hover:text-text transition-colors"
           >
             {mobileMenuOpen ? (
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -93,6 +152,7 @@ export default function Navbar() {
               </svg>
             )}
           </button>
+          </div>
         </div>
 
         {/* Mobile Nav */}

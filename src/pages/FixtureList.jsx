@@ -5,6 +5,8 @@ import useLiveEvents from '../hooks/useLiveEvents'
 import LoadingSpinner from '../components/common/LoadingSpinner'
 import { useToast } from '../components/common/Toast'
 import { isTournamentPlayingState, isTournamentBreakLikeState } from '../utils/tournamentPhases'
+import ChampionshipBettingPanel from '../components/betting/ChampionshipBettingPanel'
+import FixtureBetBar from '../components/betting/FixtureBetBar'
 
 const ROUNDS_ORDER = ['Round of 16', 'Quarter-finals', 'Semi-finals', 'Final']
 
@@ -242,6 +244,9 @@ export default function FixtureList() {
           ))}
         </div>
       </div>
+
+      {/* Championship winner betting (virtual credits) */}
+      <ChampionshipBettingPanel />
 
       {/* Error Banner */}
       {error && (
@@ -610,43 +615,46 @@ function MatchCard({ match, featured = false }) {
   )
 }
 
-// Upcoming match card - styled differently to indicate these are scheduled
+// Upcoming match card - styled differently to indicate these are scheduled.
+// Includes pre-match betting odds + bet entry (virtual credits only).
 function UpcomingMatchCard({ match }) {
   const { fixtureId, homeTeam, awayTeam } = match
+  const canBet = !!fixtureId && !!homeTeam?.id && !!awayTeam?.id
 
   return (
-    <Link
-      to={`/live/${fixtureId}`}
-      className="block p-3 rounded-xl border border-amber-500/20 bg-card/80 hover:border-amber-500/40 transition-all"
-    >
-      {/* Status */}
-      <div className="flex items-center justify-between mb-2">
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-400">
-          Scheduled
-        </span>
-      </div>
-
-      {/* Teams */}
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="flex-1 text-sm font-medium truncate text-text">
-            {homeTeam?.name || 'TBD'}
-          </span>
-          <span className="text-lg font-bold font-mono min-w-[24px] text-right text-text-muted">
-            -
+    <div className="p-3 rounded-xl border border-amber-500/20 bg-card/80 hover:border-amber-500/40 transition-all">
+      <Link to={`/live/${fixtureId}`} className="block">
+        {/* Status */}
+        <div className="flex items-center justify-between mb-2">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-400">
+            Scheduled
           </span>
         </div>
 
-        <div className="flex items-center justify-between gap-2">
-          <span className="flex-1 text-sm font-medium truncate text-text">
-            {awayTeam?.name || 'TBD'}
-          </span>
-          <span className="text-lg font-bold font-mono min-w-[24px] text-right text-text-muted">
-            -
-          </span>
+        {/* Teams */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex-1 text-sm font-medium truncate text-text">
+              {homeTeam?.name || 'TBD'}
+            </span>
+            <span className="text-lg font-bold font-mono min-w-[24px] text-right text-text-muted">
+              -
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex-1 text-sm font-medium truncate text-text">
+              {awayTeam?.name || 'TBD'}
+            </span>
+            <span className="text-lg font-bold font-mono min-w-[24px] text-right text-text-muted">
+              -
+            </span>
+          </div>
         </div>
-      </div>
-    </Link>
+      </Link>
+
+      {canBet && <FixtureBetBar fixtureId={fixtureId} homeTeam={homeTeam} awayTeam={awayTeam} />}
+    </div>
   )
 }
 

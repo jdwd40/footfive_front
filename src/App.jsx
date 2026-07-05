@@ -11,6 +11,8 @@ import FixtureDetail from './pages/FixtureDetail'
 import TeamList from './pages/TeamList'
 import TeamDetail from './pages/TeamDetail'
 import OddsList from './pages/OddsList'
+import Account from './pages/Account'
+import MyBets from './pages/MyBets'
 
 export default function App() {
   return (
@@ -38,6 +40,10 @@ export default function App() {
             
             {/* Odds */}
             <Route path="/odds" element={<OddsList />} />
+
+            {/* Virtual betting */}
+            <Route path="/account" element={<Account />} />
+            <Route path="/bets" element={<MyBets />} />
             
             {/* 404 */}
             <Route path="*" element={<NotFound />} />
