@@ -3,9 +3,10 @@ import { useEffect, useCallback, useState, useRef, useMemo } from 'react'
 import useLiveStore from '../stores/useLiveStore'
 import useLiveEvents from '../hooks/useLiveEvents'
 import { liveApi } from '../api/client'
-import { isTournamentPlayingState, isTournamentBreakLikeState } from '../utils/tournamentPhases'
+import { isTournamentPlayingState, isTournamentBreakLikeState, getNextKickoffAt } from '../utils/tournamentPhases'
 import { sortFixturesByBracket } from '../utils/tickerHelpers'
 import RoundSection from '../components/live/RoundSection'
+import KickoffCountdown from '../components/live/KickoffCountdown'
 import TeamStatsPanel from '../components/live/TeamStatsPanel'
 import WinnerCelebration from '../components/live/WinnerCelebration'
 import GoalTicker from '../components/live/GoalTicker'
@@ -44,6 +45,7 @@ const TOURNAMENT_STATE_CONFIG = {
   FINAL: { title: 'THE FINAL', subtitle: 'The ultimate showdown', icon: '🏆', phase: 'Final' },
   RESULTS: { title: 'Tournament Complete', subtitle: 'Champion crowned!', icon: '👑', phase: 'complete' },
   COMPLETE: { title: 'Tournament Complete', subtitle: 'Next tournament soon', icon: '🎉', phase: 'complete' },
+  TOURNAMENT_BREAK: { title: 'Tournament Complete', subtitle: 'A new cup is loading…', icon: '🎉', phase: 'break' },
 }
 
 // Map legacy state to current round (when API omits currentRound)
@@ -608,30 +610,11 @@ function ConnectionStatus({ connected, connecting, onReconnect }) {
 }
 
 // Tournament Header Component
-/* eslint-disable react-hooks/purity -- inter-round countdown uses Date.now() */
 function TournamentHeader({ tournament, stateConfig, currentRound }) {
   const isLive = isTournamentPlayingState(tournament?.state)
   const isComplete = tournament?.state === 'RESULTS' || tournament?.state === 'COMPLETE'
-  const nextRoundStartMs = tournament?.nextRoundStartAt
-    ? new Date(tournament.nextRoundStartAt).getTime()
-    : null
-
-  const [delayTick, setDelayTick] = useState(0)
-  useEffect(() => {
-    if (tournament?.state !== 'INTER_ROUND_DELAY' || !nextRoundStartMs) return
-    const id = setInterval(() => setDelayTick((t) => t + 1), 1000)
-    return () => clearInterval(id)
-  }, [tournament?.state, nextRoundStartMs])
-
-  const delayLabel =
-    tournament?.state === 'INTER_ROUND_DELAY' && nextRoundStartMs
-      ? (() => {
-          const remaining = Math.max(0, nextRoundStartMs - Date.now())
-          return `${Math.floor(remaining / 60000)}:${String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0')}`
-        })()
-      : null
-
-  void delayTick
+  const isBreakLike = isTournamentBreakLikeState(tournament?.state)
+  const kickoff = getNextKickoffAt(tournament)
 
   return (
     <div className={`
@@ -675,9 +658,13 @@ function TournamentHeader({ tournament, stateConfig, currentRound }) {
             )}
           </div>
           <p className="text-text-muted">{stateConfig.subtitle}</p>
-          {tournament?.state === 'INTER_ROUND_DELAY' && delayLabel && (
-            <p className="mt-2 text-sm font-mono text-primary">
-              Next round in {delayLabel}
+          {isBreakLike && (
+            <p className="mt-2 text-sm">
+              <KickoffCountdown
+                kickoffAt={kickoff?.at ?? null}
+                prefix={kickoff?.kind === 'tournament' ? 'New cup drops in' : 'Next round kicks off in'}
+                fallback="Preparing next fixture…"
+              />
             </p>
           )}
 

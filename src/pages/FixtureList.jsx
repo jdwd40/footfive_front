@@ -4,7 +4,8 @@ import useLiveStore from '../stores/useLiveStore'
 import useLiveEvents from '../hooks/useLiveEvents'
 import LoadingSpinner from '../components/common/LoadingSpinner'
 import { useToast } from '../components/common/Toast'
-import { isTournamentPlayingState, isTournamentBreakLikeState } from '../utils/tournamentPhases'
+import { isTournamentPlayingState, isTournamentBreakLikeState, getNextKickoffAt } from '../utils/tournamentPhases'
+import KickoffCountdown from '../components/live/KickoffCountdown'
 import ChampionshipBettingPanel from '../components/betting/ChampionshipBettingPanel'
 import FixtureBetBar from '../components/betting/FixtureBetBar'
 
@@ -268,6 +269,15 @@ export default function FixtureList() {
               {isRoundActive ? `🔴 ${currentRound} - Live` : `📋 ${nextRound || 'Next Round'} - Coming Up`}
             </h2>
           </div>
+          {isBreak && !isRoundActive && (
+            <p className="mb-4 -mt-2 text-sm">
+              <KickoffCountdown
+                kickoffAt={getNextKickoffAt(tournament)?.at ?? null}
+                prefix={getNextKickoffAt(tournament)?.kind === 'tournament' ? 'New cup drops in' : `${nextRound || 'Next round'} kicks off in`}
+                fallback="Preparing next fixture…"
+              />
+            </p>
+          )}
 
           <div className={`
             rounded-2xl border p-4
@@ -708,6 +718,7 @@ function formatTournamentState(state) {
     FINAL: 'The Final',
     RESULTS: 'Complete',
     COMPLETE: 'Complete',
+    TOURNAMENT_BREAK: 'New Cup Soon',
   }
   return labels[state] || state
 }

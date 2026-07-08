@@ -13,6 +13,7 @@ import TeamDetail from './pages/TeamDetail'
 import OddsList from './pages/OddsList'
 import Account from './pages/Account'
 import MyBets from './pages/MyBets'
+import Garage from './pages/Garage'
 
 export default function App() {
   return (
@@ -44,6 +45,9 @@ export default function App() {
             {/* Virtual betting */}
             <Route path="/account" element={<Account />} />
             <Route path="/bets" element={<MyBets />} />
+
+            {/* Cyborg Garage (user-controlled team management) */}
+            <Route path="/garage" element={<Garage />} />
             
             {/* 404 */}
             <Route path="*" element={<NotFound />} />

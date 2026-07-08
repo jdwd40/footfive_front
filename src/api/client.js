@@ -439,6 +439,42 @@ export const bettingApi = {
   },
 }
 
+// Cyborg Garage API (one shared user-controlled team, virtual credits only)
+export const garageApi = {
+  getGarage: async () => {
+    const { data } = await api.get('/garage')
+    return data.garage
+  },
+  setTeam: async (teamId) => {
+    const { data } = await api.put('/garage/team', { teamId })
+    return data
+  },
+  setLineup: async (activePlayerIds) => {
+    const { data } = await api.put('/garage/lineup', { activePlayerIds })
+    return data
+  },
+  setPlayerMode: async (playerId, mode) => {
+    const { data } = await api.put(`/garage/players/${playerId}/mode`, { mode })
+    return data
+  },
+  buyEnergy: async ({ pack, playerId = null }) => {
+    const { data } = await api.post('/garage/energy', { pack, playerId })
+    return data
+  },
+  repairPlayer: async (playerId) => {
+    const { data } = await api.post(`/garage/players/${playerId}/repair`)
+    return data
+  },
+  upgradePlayer: async (playerId, stat) => {
+    const { data } = await api.post(`/garage/players/${playerId}/upgrade`, { stat })
+    return data
+  },
+  getLatestResult: async () => {
+    const { data } = await api.get('/garage/rewards/latest')
+    return data.result
+  },
+}
+
 export { normalizeLiveEvent, normalizeLiveEventsList } from '../utils/liveEventModel'
 
 export default api

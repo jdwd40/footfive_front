@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { liveApi } from '../api/client'
 import useLiveStore from '../stores/useLiveStore'
 import useLiveEvents from '../hooks/useLiveEvents'
 import usePacedEventReveal from '../hooks/usePacedEventReveal'
 import MatchClock from '../components/live/MatchClock'
+import KickoffCountdown from '../components/live/KickoffCountdown'
+import { getNextKickoffAt } from '../utils/tournamentPhases'
 import EventFeed from '../components/live/EventFeed'
 import LiveBettingPanel from '../components/betting/LiveBettingPanel'
 import FixtureBetBar from '../components/betting/FixtureBetBar'
@@ -25,8 +27,13 @@ import { getEventDedupeKey } from '../hooks/usePacedEventReveal'
 const SEQ_STORAGE_PREFIX = 'footfive:lastSeq:'
 const LIVE_MATCH_POLL_MS = 2000
 
+// After the final message is on screen, wait this long before auto-returning
+// to the live dashboard (unless the user navigates away themselves).
+const AUTO_RETURN_AFTER_END_MS = 60000
+const KICKOFF_STATUS_POLL_MS = 5000
+
 const MATCH_STATE_LABELS = {
-  SCHEDULED: 'Scheduled',
+  SCHEDULED: 'Kickoff Soon',
   FIRST_HALF: '1st Half',
   HALFTIME: 'Half Time',
   SECOND_HALF: '2nd Half',
@@ -75,8 +82,10 @@ function writeStoredSeq(fixtureId, seq) {
 export default function LiveMatchDetail() {
   const { fixtureId } = useParams()
   const { addToast } = useToast()
+  const navigate = useNavigate()
 
   const [match, setMatch] = useState(null)
+  const [kickoff, setKickoff] = useState(null)
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -226,6 +235,12 @@ export default function LiveMatchDetail() {
         data = null
       }
 
+      // Scheduled (pre-kickoff) matches 404 on the live match endpoint; fall
+      // back to the fixtures snapshot so Live View still opens before kickoff.
+      if (!data && useLiveStore.getState().fixtures.length === 0) {
+        await useLiveStore.getState().fetchSnapshot().catch(() => {})
+      }
+
       const sm = useLiveStore.getState().matches.find((m) => m.fixtureId == fixtureId || String(m.fixtureId) === String(fixtureId))
       const fb = useLiveStore.getState().fixtures.find((m) => m.fixtureId == fixtureId || String(m.fixtureId) === String(fixtureId))
 
@@ -354,6 +369,56 @@ export default function LiveMatchDetail() {
     )
   }, [match])
 
+  const matchIsFinished = match?.state === 'FINISHED' || match?.isFinished === true
+  const isPreKickoff = match?.state === 'SCHEDULED' && !matchIsFinished
+
+  // Pre-kickoff: poll tournament status for the real kickoff time.
+  // The match itself starts via the existing SSE match_start / match poll flow.
+  useEffect(() => {
+    if (!isPreKickoff) return
+    let cancelled = false
+
+    const poll = async () => {
+      try {
+        const data = await liveApi.getStatus()
+        if (cancelled) return
+        setKickoff(getNextKickoffAt(data.tournament))
+      } catch {
+        /* keep last known kickoff */
+      }
+    }
+
+    poll()
+    const interval = setInterval(poll, KICKOFF_STATUS_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [isPreKickoff])
+
+  // Auto-return: only after the match truly ended AND the final message
+  // (match_end / shootout_end) has been revealed on screen. Never fires for a
+  // match that was already finished when the page was opened.
+  const sawUnfinishedRef = useRef(false)
+  useEffect(() => {
+    if (match && !matchIsFinished) sawUnfinishedRef.current = true
+  }, [match, matchIsFinished])
+
+  // match_end / shootout_end close a naturally played match; fixture_final is
+  // the tournament-level confirmation (also the only terminal event emitted
+  // when a match is admin force-ended).
+  const finalMessageVisible = useMemo(
+    () => visibleEvents.some((e) => ['match_end', 'shootout_end', 'fixture_final'].includes(e.type)),
+    [visibleEvents]
+  )
+
+  const autoReturnArmed = matchIsFinished && finalMessageVisible && sawUnfinishedRef.current
+  useEffect(() => {
+    if (!autoReturnArmed) return
+    const timer = setTimeout(() => navigate('/live'), AUTO_RETURN_AFTER_END_MS)
+    return () => clearTimeout(timer)
+  }, [autoReturnArmed, navigate])
+
   const stateLabel = match?.state ? MATCH_STATE_LABELS[match.state] : 'Loading...'
 
   const displayClock = useMemo(
@@ -443,11 +508,27 @@ export default function LiveMatchDetail() {
         </div>
 
         <div className="mb-6">
-          <MatchClock
-            events={visibleEvents}
-            isLive={isLive}
-            matchMinute={isLive ? undefined : match?.minute}
-          />
+          {isPreKickoff ? (
+            <div className="text-center">
+              <div className="inline-flex flex-col items-center px-6 py-3 rounded-2xl bg-card border border-amber-500/30">
+                <KickoffCountdown
+                  kickoffAt={kickoff?.at ?? null}
+                  prefix="Kickoff in"
+                  fallback="Kickoff soon"
+                  className="text-2xl"
+                />
+              </div>
+              <div className="mt-2 text-sm font-medium uppercase tracking-wide text-text-muted">
+                Pre-Match
+              </div>
+            </div>
+          ) : (
+            <MatchClock
+              events={visibleEvents}
+              isLive={isLive}
+              matchMinute={isLive ? undefined : match?.minute}
+            />
+          )}
         </div>
 
         <div className="flex items-center justify-between gap-4">
@@ -457,7 +538,7 @@ export default function LiveMatchDetail() {
             </div>
             <h2
               className={`text-lg font-bold truncate px-2 ${
-                (displayScore?.home ?? 0) > (displayScore?.away ?? 0) ? 'text-primary' : 'text-text'
+                !isPreKickoff && (displayScore?.home ?? 0) > (displayScore?.away ?? 0) ? 'text-primary' : 'text-text'
               }`}
             >
               {match?.homeTeam?.name || 'Home Team'}
@@ -465,22 +546,30 @@ export default function LiveMatchDetail() {
           </div>
 
           <div className="text-center px-4">
-            <div className="flex items-center gap-4">
-              <ScoreDigit
-                value={displayScore?.home ?? 0}
-                isWinning={(displayScore?.home ?? 0) > (displayScore?.away ?? 0)}
-              />
-              <span className="text-3xl text-text-muted">-</span>
-              <ScoreDigit
-                value={displayScore?.away ?? 0}
-                isWinning={(displayScore?.away ?? 0) > (displayScore?.home ?? 0)}
-              />
-            </div>
+            {isPreKickoff ? (
+              <div className="w-16 h-20 rounded-xl bg-card-hover flex items-center justify-center">
+                <span className="text-2xl font-bold text-text-muted">VS</span>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-4">
+                  <ScoreDigit
+                    value={displayScore?.home ?? 0}
+                    isWinning={(displayScore?.home ?? 0) > (displayScore?.away ?? 0)}
+                  />
+                  <span className="text-3xl text-text-muted">-</span>
+                  <ScoreDigit
+                    value={displayScore?.away ?? 0}
+                    isWinning={(displayScore?.away ?? 0) > (displayScore?.home ?? 0)}
+                  />
+                </div>
 
-            {(displayPenaltyScore?.home > 0 || displayPenaltyScore?.away > 0) && (
-              <p className="text-sm text-text-muted mt-2">
-                ({displayPenaltyScore.home} - {displayPenaltyScore.away} pens)
-              </p>
+                {(displayPenaltyScore?.home > 0 || displayPenaltyScore?.away > 0) && (
+                  <p className="text-sm text-text-muted mt-2">
+                    ({displayPenaltyScore.home} - {displayPenaltyScore.away} pens)
+                  </p>
+                )}
+              </>
             )}
           </div>
 
@@ -490,7 +579,7 @@ export default function LiveMatchDetail() {
             </div>
             <h2
               className={`text-lg font-bold truncate px-2 ${
-                (displayScore?.away ?? 0) > (displayScore?.home ?? 0) ? 'text-primary' : 'text-text'
+                !isPreKickoff && (displayScore?.away ?? 0) > (displayScore?.home ?? 0) ? 'text-primary' : 'text-text'
               }`}
             >
               {match?.awayTeam?.name || 'Away Team'}
@@ -545,13 +634,27 @@ export default function LiveMatchDetail() {
             )}
           </div>
 
-          <EventFeed
-            events={visibleEvents}
-            homeTeam={match?.homeTeam}
-            awayTeam={match?.awayTeam}
-            autoScroll={isLive}
-            desktopTall
-          />
+          {isPreKickoff ? (
+            <div className="text-center py-12">
+              <span className="text-5xl block mb-4">🏟️</span>
+              <p className="text-text font-semibold mb-1">Players entering the neon cage…</p>
+              <p className="text-sm text-text-muted">
+                <KickoffCountdown
+                  kickoffAt={kickoff?.at ?? null}
+                  prefix="Live commentary starts in"
+                  fallback="Live commentary starts at kickoff"
+                />
+              </p>
+            </div>
+          ) : (
+            <EventFeed
+              events={visibleEvents}
+              homeTeam={match?.homeTeam}
+              awayTeam={match?.awayTeam}
+              autoScroll={isLive}
+              desktopTall
+            />
+          )}
         </div>
       </div>
 

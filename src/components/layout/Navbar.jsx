@@ -11,6 +11,7 @@ const navLinks = [
   { to: '/teams', label: 'Teams', icon: '👥' },
   { to: '/fixtures', label: 'Fixtures', icon: '📅' },
   { to: '/bets', label: 'Bets', icon: '🎫' },
+  { to: '/garage', label: 'Garage', icon: '🔧' },
 ]
 
 export default function Navbar() {
