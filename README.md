@@ -1,3 +1,15 @@
+# ⚠️ INACTIVE / LEGACY REPOSITORY
+
+**This repository is no longer used for active FootFive development.**
+
+The current FootFive application lives at:
+
+**https://github.com/jdwd40/footfive**
+
+Do not open new issues or pull requests here, and do not deploy from this repository. It is retained only for historical reference.
+
+---
+
 # FootFive Frontend
 
 A real-time 5-a-side football tournament simulation frontend built with React and Vite.
